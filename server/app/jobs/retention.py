@@ -69,7 +69,7 @@ deployed login role is a non-superuser member of ``crashlens_app`` with only
 would have failed in production with a "must be owner of relation events"
 privilege error. This slice flagged the gap instead of widening grants; the
 governor decided the fix on 2026-07-04 and migration 0003
-(``0003_partition_fn_security_definer``) implements it:
+(``0003_partition_fn_secdef``) implements it:
 
 - Both functions are now ``SECURITY DEFINER``: the DDL inside runs with the
   function OWNER's privileges (the migration/schema-owner role that owns
