@@ -212,10 +212,20 @@ def compute_fingerprint(normalized: dict) -> str:
     """Return a stable sha256 hex fingerprint for grouping ``normalized`` into an Issue.
 
     With an exception: hash the ROOT cause's type plus the (filename, function)
-    of its last ``FINGERPRINT_FRAME_LIMIT`` ``in_app`` frames (``in_app`` missing
-    defaults to true). Without an exception: hash the level plus the
-    normalized message. ``platform`` is always part of the hash input so the
-    same message on different platforms does not collide.
+    of its last ``FINGERPRINT_FRAME_LIMIT`` frames, selected in THREE tiers
+    (governor ruling, W2-02/03 review):
+
+    1. ``in_app`` frames (``in_app`` missing defaults to true), when any exist;
+    2. otherwise ALL frames -- an all-library stack (e.g. a DB driver timeout
+       raised entirely inside a client library) still discriminates by WHERE in
+       the library it failed, instead of collapsing to type+platform and
+       over-grouping unrelated failures;
+    3. only when the root cause has NO frames at all does the signature
+       legitimately reduce to type + platform.
+
+    Without an exception: hash the level plus the normalized message.
+    ``platform`` is always part of the hash input so the same message on
+    different platforms does not collide.
     """
     platform = normalized.get("platform")
     exception = normalized.get("exception")
@@ -224,12 +234,14 @@ def compute_fingerprint(normalized: dict) -> str:
         root = walk_to_root_cause(exception)
         stacktrace = root.get("stacktrace") if isinstance(root, dict) else None
         frames = stacktrace.get("frames", []) if isinstance(stacktrace, dict) else []
+        dict_frames = [frame for frame in frames if isinstance(frame, dict)]
         in_app_frames = [
-            frame
-            for frame in frames
-            if isinstance(frame, dict) and frame.get("in_app", True)
+            frame for frame in dict_frames if frame.get("in_app", True)
         ]
-        selected = in_app_frames[-FINGERPRINT_FRAME_LIMIT:]
+        # Tier 2 fallback: frames exist but none are in_app (all-library
+        # stack) -> use all frames rather than hashing an empty frame list.
+        candidate_frames = in_app_frames if in_app_frames else dict_frames
+        selected = candidate_frames[-FINGERPRINT_FRAME_LIMIT:]
         signature = {
             "v": 1,
             "platform": platform,

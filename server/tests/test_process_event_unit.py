@@ -300,6 +300,62 @@ def test_library_frames_excluded_from_fingerprint() -> None:
     )
 
 
+# --- Three-tier frame selection (governor ruling: all-library fallback) --------
+def test_all_library_stacks_with_different_frames_discriminate() -> None:
+    # (a) Two all-library stacks, same exception type, different frames ->
+    # DIFFERENT fingerprints (tier 2 hashes ALL frames, not an empty list).
+    lib_a = _exc_envelope(frames=[
+        {"filename": "psycopg/pool.py", "function": "getconn", "in_app": False},
+        {"filename": "psycopg/conn.py", "function": "connect", "in_app": False},
+    ])
+    lib_b = _exc_envelope(frames=[
+        {"filename": "redis/client.py", "function": "execute", "in_app": False},
+        {"filename": "redis/socket.py", "function": "read", "in_app": False},
+    ])
+    assert compute_fingerprint(normalize_envelope(lib_a)) != compute_fingerprint(
+        normalize_envelope(lib_b)
+    )
+
+
+def test_same_all_library_stack_is_stable() -> None:
+    # (b) The same all-library stack twice -> same fingerprint.
+    frames = [
+        {"filename": "psycopg/pool.py", "function": "getconn", "in_app": False},
+        {"filename": "psycopg/conn.py", "function": "connect", "in_app": False},
+    ]
+    a = normalize_envelope(_exc_envelope(frames=copy.deepcopy(frames)))
+    b = normalize_envelope(_exc_envelope(frames=copy.deepcopy(frames)))
+    assert compute_fingerprint(a) == compute_fingerprint(b)
+
+
+def test_zero_frames_fingerprints_stably_on_type_and_platform() -> None:
+    # (c) Tier 3: no frames at all -> stable signature on type + platform.
+    a = normalize_envelope(_exc_envelope(frames=[]))
+    b = normalize_envelope(_exc_envelope(frames=[]))
+    assert compute_fingerprint(a) == compute_fingerprint(b)
+    # And the type still discriminates.
+    c = normalize_envelope(_exc_envelope(frames=[], exc_type="KeyError"))
+    assert compute_fingerprint(a) != compute_fingerprint(c)
+
+
+def test_in_app_frame_present_means_library_frames_never_affect_hash() -> None:
+    # (d) Tier 1 preserved: with an in_app frame present, VARYING library
+    # frames leave the fingerprint unchanged (strengthens
+    # test_library_frames_excluded_from_fingerprint above).
+    with_lib_one = _exc_envelope(frames=[
+        {"filename": "lib1.py", "function": "helper_x", "in_app": False},
+        {"filename": "app.py", "function": "run", "in_app": True},
+    ])
+    with_lib_other = _exc_envelope(frames=[
+        {"filename": "lib2.py", "function": "helper_y", "in_app": False},
+        {"filename": "app.py", "function": "run", "in_app": True},
+        {"filename": "lib3.py", "function": "helper_z", "in_app": False},
+    ])
+    assert compute_fingerprint(normalize_envelope(with_lib_one)) == compute_fingerprint(
+        normalize_envelope(with_lib_other)
+    )
+
+
 # --- derive_title -------------------------------------------------------------
 def test_title_from_exception_type_and_value_first_line() -> None:
     env = normalize_envelope(
