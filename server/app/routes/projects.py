@@ -110,7 +110,9 @@ async def create_project(
             detail="A project name is required.",
         )
     platform = body.platform.strip() if body.platform else None
-    project = await projects.create_project(ctx.org_id, name, platform or None)
+    project = await projects.create_project(
+        ctx.org_id, name, platform or None, actor_user_id=ctx.user.id
+    )
     if project is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -144,7 +146,9 @@ async def delete_project(
     project_id: uuid.UUID,
     ctx: Annotated[OrgContext, Depends(require_org_admin)],
 ) -> None:
-    deleted = await projects.delete_project(ctx.org_id, project_id)
+    deleted = await projects.delete_project(
+        ctx.org_id, project_id, actor_user_id=ctx.user.id
+    )
     if not deleted:
         raise _PROJECT_NOT_FOUND
 
@@ -173,7 +177,7 @@ async def update_project_sampling(
 ) -> ProjectOut:
     _validate_sampling_rate(body.sampling_rate)
     project = await projects.update_project_sampling(
-        ctx.org_id, project_id, body.sampling_rate
+        ctx.org_id, project_id, body.sampling_rate, actor_user_id=ctx.user.id
     )
     if project is None:
         raise _PROJECT_NOT_FOUND
@@ -190,7 +194,9 @@ async def create_key(
     project_id: uuid.UUID,
     ctx: Annotated[OrgContext, Depends(require_org_admin)],
 ) -> DsnKeyOut:
-    key = await projects.create_dsn_key(ctx.org_id, project_id)
+    key = await projects.create_dsn_key(
+        ctx.org_id, project_id, actor_user_id=ctx.user.id
+    )
     if key is None:
         raise _PROJECT_NOT_FOUND
     return _key_out(key)
@@ -205,7 +211,9 @@ async def revoke_key(
     key_id: uuid.UUID,
     ctx: Annotated[OrgContext, Depends(require_org_admin)],
 ) -> None:
-    revoked = await projects.revoke_dsn_key(ctx.org_id, project_id, key_id)
+    revoked = await projects.revoke_dsn_key(
+        ctx.org_id, project_id, key_id, actor_user_id=ctx.user.id
+    )
     if not revoked:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

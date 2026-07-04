@@ -115,6 +115,7 @@ async def test_channel_crud_lifecycle(app_sessionmaker, superuser_engine) -> Non
             {"webhook_url": "https://hooks.slack.com/services/T/B/X"},
             None,
             session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert created is not None
         assert created["type"] == "slack"
@@ -126,7 +127,8 @@ async def test_channel_crud_lifecycle(app_sessionmaker, superuser_engine) -> Non
 
         # Disable it.
         updated = await alerts.update_channel(
-            org_id, created["id"], enabled=False, session_factory=app_sessionmaker
+            org_id, created["id"], enabled=False, session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert updated is not None
         assert updated["enabled"] is False
@@ -137,6 +139,7 @@ async def test_channel_crud_lifecycle(app_sessionmaker, superuser_engine) -> Non
             created["id"],
             config={"webhook_url": "https://hooks.slack.com/services/T/B/Y"},
             session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert reconfigured is not None
         assert reconfigured["config"]["webhook_url"].endswith("/Y")
@@ -144,7 +147,8 @@ async def test_channel_crud_lifecycle(app_sessionmaker, superuser_engine) -> Non
         # Delete it.
         assert (
             await alerts.delete_channel(
-                org_id, created["id"], session_factory=app_sessionmaker
+                org_id, created["id"], session_factory=app_sessionmaker,
+                actor_user_id=None,
             )
             is True
         )
@@ -154,7 +158,8 @@ async def test_channel_crud_lifecycle(app_sessionmaker, superuser_engine) -> Non
         # Deleting again is a no-op.
         assert (
             await alerts.delete_channel(
-                org_id, created["id"], session_factory=app_sessionmaker
+                org_id, created["id"], session_factory=app_sessionmaker,
+                actor_user_id=None,
             )
             is False
         )
@@ -170,7 +175,8 @@ async def test_project_scoped_channel_requires_project_in_org(
         org_id = await _seed_org(conn, "ScopeCo")
     try:
         project = await projects.create_project(
-            org_id, "Web", None, session_factory=app_sessionmaker
+            org_id, "Web", None, session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert project is not None
 
@@ -180,6 +186,7 @@ async def test_project_scoped_channel_requires_project_in_org(
             {"url": "https://ops.example.com/hook"},
             uuid.UUID(project["id"]) if isinstance(project["id"], str) else project["id"],
             session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert scoped is not None
         assert str(scoped["project_id"]) == str(project["id"])
@@ -191,6 +198,7 @@ async def test_project_scoped_channel_requires_project_in_org(
             {"url": "https://ops.example.com/hook"},
             uuid.uuid4(),
             session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert missing is None
     finally:
@@ -210,6 +218,7 @@ async def test_cross_org_channel_isolation(app_sessionmaker, superuser_engine) -
             {"webhook_url": "https://hooks.slack.com/services/A/A/A"},
             None,
             session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert channel is not None
 
@@ -219,13 +228,15 @@ async def test_cross_org_channel_isolation(app_sessionmaker, superuser_engine) -
         )
         assert (
             await alerts.update_channel(
-                org_b, channel["id"], enabled=False, session_factory=app_sessionmaker
+                org_b, channel["id"], enabled=False, session_factory=app_sessionmaker,
+                actor_user_id=None,
             )
             is None
         )
         assert (
             await alerts.delete_channel(
-                org_b, channel["id"], session_factory=app_sessionmaker
+                org_b, channel["id"], session_factory=app_sessionmaker,
+                actor_user_id=None,
             )
             is False
         )
@@ -328,10 +339,12 @@ async def dispatch_org(superuser_engine, app_sessionmaker):
     async with superuser_engine.begin() as conn:
         org_id = await _seed_org(conn, "DispatchCo")
     project_1 = await projects.create_project(
-        org_id, "Project One", None, session_factory=app_sessionmaker
+        org_id, "Project One", None, session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     project_2 = await projects.create_project(
-        org_id, "Project Two", None, session_factory=app_sessionmaker
+        org_id, "Project Two", None, session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert project_1 is not None and project_2 is not None
     yield {"org_id": org_id, "project_1": project_1["id"], "project_2": project_2["id"]}
@@ -354,22 +367,27 @@ async def test_dispatch_selects_org_wide_and_project_scoped_only(
     await alerts.create_channel(
         org_id, "slack", {"webhook_url": "https://h.example.com/orgwide"}, None,
         session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     await alerts.create_channel(
         org_id, "webhook", {"url": "https://h.example.com/proj1"}, pid(project_1),
         session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     await alerts.create_channel(
         org_id, "slack", {"webhook_url": "https://h.example.com/proj2"}, pid(project_2),
         session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     disabled = await alerts.create_channel(
         org_id, "slack", {"webhook_url": "https://h.example.com/disabled"}, None,
         session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert disabled is not None
     await alerts.update_channel(
-        org_id, disabled["id"], enabled=False, session_factory=app_sessionmaker
+        org_id, disabled["id"], enabled=False, session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
 
     slack_calls: list[str] = []
@@ -406,10 +424,12 @@ async def test_dispatch_isolates_one_failing_channel(
     await alerts.create_channel(
         org_id, "slack", {"webhook_url": "https://h.example.com/good"}, None,
         session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     await alerts.create_channel(
         org_id, "slack", {"webhook_url": "https://h.example.com/bad"}, None,
         session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
 
     delivered: list[str] = []

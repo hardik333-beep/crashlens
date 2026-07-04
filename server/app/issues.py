@@ -60,7 +60,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app import accounts
+from app import accounts, audit
 from app.db import tenant_session
 
 # --- FLAGGED DEFAULTS (governor review) ---------------------------------------
@@ -449,6 +449,14 @@ _STATUS_RETURNING = (
     "event_count, assigned_to, resolved_in_release, regressed_in_release"
 )
 
+# Maps the action verb this function accepts to the audit action name it
+# records (dot notation, per app/audit.py's ACTIONS).
+_STATUS_AUDIT_ACTIONS = {
+    "resolve": "issue.resolved",
+    "ignore": "issue.ignored",
+    "reopen": "issue.reopened",
+}
+
 
 async def set_issue_status(
     org_id: uuid.UUID,
@@ -456,6 +464,7 @@ async def set_issue_status(
     issue_id: uuid.UUID,
     action: str,
     *,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict | None:
     """Apply a status ``action`` (resolve|ignore|reopen) and return the issue.
@@ -470,6 +479,11 @@ async def set_issue_status(
     matched on ``project_id`` so an issue reached through the wrong project URL is
     not touched. The ``releases`` subquery on ``resolve`` runs in the same
     RLS-scoped session, so only this org's releases are visible to it.
+
+    ``actor_user_id`` is recorded on the corresponding "issue.resolved" /
+    "issue.ignored" / "issue.reopened" audit row (via
+    :data:`_STATUS_AUDIT_ACTIONS`), written only when the issue was actually
+    found and updated.
     """
     set_clause = _ACTION_SET_SQL[action]
     async with tenant_session(str(org_id), session_factory=session_factory) as session:
@@ -485,8 +499,17 @@ async def set_issue_status(
                 {"iid": str(issue_id), "pid": str(project_id)},
             )
         ).one_or_none()
-    if row is None:
-        return None
+        if row is None:
+            return None
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=actor_user_id,
+            action=_STATUS_AUDIT_ACTIONS[action],
+            target_type="issue",
+            target_id=str(issue_id),
+            data={"project_id": str(project_id)},
+        )
     return _issue_dict(row)
 
 
@@ -505,6 +528,7 @@ async def assign_issue(
     issue_id: uuid.UUID,
     user_id: uuid.UUID | None,
     *,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict | None:
     """Assign (or unassign, ``user_id=None``) an issue and return its detail.
@@ -514,6 +538,10 @@ async def assign_issue(
     -- membership is verified against ``org_memberships`` INSIDE the same
     ``tenant_session`` the UPDATE runs in, so an issue can never be assigned to
     an outsider even under a race.
+
+    ``actor_user_id`` is the caller performing the assignment, recorded on the
+    "issue.assigned" audit row (distinct from ``user_id``, the ASSIGNEE);
+    written only when the issue was actually found and updated.
     """
     async with tenant_session(str(org_id), session_factory=session_factory) as session:
         if await _load_project_row(session, project_id) is None:
@@ -545,8 +573,17 @@ async def assign_issue(
                 },
             )
         ).one_or_none()
-    if row is None:
-        return None
+        if row is None:
+            return None
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=actor_user_id,
+            action="issue.assigned",
+            target_type="issue",
+            target_id=str(issue_id),
+            data={"assigned_to": str(user_id) if user_id is not None else None},
+        )
     return await get_issue(
         org_id, project_id, issue_id, session_factory=session_factory
     )
@@ -660,6 +697,7 @@ async def delete_issue(
     project_id: uuid.UUID,
     issue_id: uuid.UUID,
     *,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> bool:
     """Delete ONLY the issue row. Return True if one was deleted.
@@ -671,10 +709,31 @@ async def delete_issue(
     RLS scopes the DELETE to ``org_id`` and it is matched on ``project_id``, so an
     issue in another org (or reached through the wrong project) affects zero rows
     (reported as a 404, not a cross-tenant delete).
+
+    ``actor_user_id`` is recorded on the "issue.deleted" audit row, written only
+    when an issue was actually found and deleted; its ``title`` is captured via
+    ``RETURNING`` for the audit trail (the underlying events are unaffected, per
+    the module docstring, so this fact remains meaningful after the delete).
     """
     async with tenant_session(str(org_id), session_factory=session_factory) as session:
-        result = await session.execute(
-            text("DELETE FROM issues WHERE id = :iid AND project_id = :pid"),
-            {"iid": str(issue_id), "pid": str(project_id)},
+        row = (
+            await session.execute(
+                text(
+                    "DELETE FROM issues WHERE id = :iid AND project_id = :pid "
+                    "RETURNING title"
+                ),
+                {"iid": str(issue_id), "pid": str(project_id)},
+            )
+        ).one_or_none()
+        if row is None:
+            return False
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=actor_user_id,
+            action="issue.deleted",
+            target_type="issue",
+            target_id=str(issue_id),
+            data={"project_id": str(project_id), "title": row.title},
         )
-    return result.rowcount > 0
+    return True

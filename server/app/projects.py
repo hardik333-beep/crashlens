@@ -30,7 +30,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app import accounts, security
+from app import accounts, audit, security
 from app.db import tenant_session
 
 
@@ -102,6 +102,7 @@ async def create_project(
     name: str,
     platform: str | None,
     *,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict | None:
     """Create a project in ``org_id`` and return it, or None on a slug clash.
@@ -110,6 +111,10 @@ async def create_project(
     inside ``tenant_session(org_id)`` so WITH CHECK passes (the row's org scope
     equals the GUC). A duplicate slug (vanishingly rare given the random suffix)
     surfaces as None so the caller can render a uniform conflict response.
+
+    ``actor_user_id`` is the verified caller recorded on the "project.created"
+    audit row, written in the SAME transaction as the INSERT (never audited on
+    the None/conflict path, since nothing was created).
     """
     project_id = uuid.uuid4()
     slug = _make_project_slug(name)
@@ -133,6 +138,15 @@ async def create_project(
                     },
                 )
             ).one()
+            await audit.record(
+                session,
+                org_id=org_id,
+                actor_user_id=actor_user_id,
+                action="project.created",
+                target_type="project",
+                target_id=str(project_id),
+                data={"name": name, "slug": slug},
+            )
     except IntegrityError:
         return None
     return _project_dict(row)
@@ -143,6 +157,7 @@ async def update_project_sampling(
     project_id: uuid.UUID,
     sampling_rate: float,
     *,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict | None:
     """Update a project's ``sampling_rate`` and return the refreshed project.
@@ -152,6 +167,9 @@ async def update_project_sampling(
     reports a 404, not a cross-tenant write. Bounds validation (0..1) is the
     route layer's job, done BEFORE this is called, so this function trusts its
     input the same way every other service function does.
+
+    ``actor_user_id`` is recorded on the "sampling.updated" audit row, written
+    only when a row was actually found and updated.
     """
     async with tenant_session(str(org_id), session_factory=session_factory) as session:
         row = (
@@ -163,8 +181,17 @@ async def update_project_sampling(
                 {"rate": sampling_rate, "pid": str(project_id)},
             )
         ).one_or_none()
-    if row is None:
-        return None
+        if row is None:
+            return None
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=actor_user_id,
+            action="sampling.updated",
+            target_type="project",
+            target_id=str(project_id),
+            data={"sampling_rate": sampling_rate},
+        )
     return _project_dict(row)
 
 
@@ -210,6 +237,7 @@ async def delete_project(
     org_id: uuid.UUID,
     project_id: uuid.UUID,
     *,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> bool:
     """Delete a project (its DSN keys cascade). Return True if one was deleted.
@@ -217,19 +245,38 @@ async def delete_project(
     RLS scopes the DELETE to ``org_id``, so a project in another org is not
     visible and the delete affects zero rows (reported as a 404, not a
     cross-tenant delete).
+
+    ``actor_user_id`` is recorded on the "project.deleted" audit row, written
+    only when a project was actually found and deleted; the row's ``name`` is
+    captured via ``RETURNING`` so the audit trail keeps a small identifying fact
+    about a project that no longer exists.
     """
     async with tenant_session(str(org_id), session_factory=session_factory) as session:
-        result = await session.execute(
-            text("DELETE FROM projects WHERE id = :pid"),
-            {"pid": str(project_id)},
+        row = (
+            await session.execute(
+                text("DELETE FROM projects WHERE id = :pid RETURNING name"),
+                {"pid": str(project_id)},
+            )
+        ).one_or_none()
+        if row is None:
+            return False
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=actor_user_id,
+            action="project.deleted",
+            target_type="project",
+            target_id=str(project_id),
+            data={"name": row.name},
         )
-    return result.rowcount > 0
+    return True
 
 
 async def create_dsn_key(
     org_id: uuid.UUID,
     project_id: uuid.UUID,
     *,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict | None:
     """Create an active DSN key for a project, or None if the project is absent.
@@ -237,7 +284,8 @@ async def create_dsn_key(
     The project is confirmed to exist in this org (under RLS) before the key is
     written, so a key can never be minted for a non-existent or other-org
     project. The generated ``public_key`` is stored and returned in plaintext:
-    it is a public identifier, not a secret (see docs/PROTOCOL.md).
+    it is a public identifier, not a secret (see docs/PROTOCOL.md), so it is
+    also safe to record on the "key.created" audit row.
     """
     key_id = uuid.uuid4()
     public_key = security.generate_public_key()
@@ -260,6 +308,15 @@ async def create_dsn_key(
                 },
             )
         ).one()
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=actor_user_id,
+            action="key.created",
+            target_type="dsn_key",
+            target_id=str(key_id),
+            data={"project_id": str(project_id), "public_key": public_key},
+        )
     return {
         "id": row.id,
         "public_key": row.public_key,
@@ -273,13 +330,14 @@ async def revoke_dsn_key(
     project_id: uuid.UUID,
     key_id: uuid.UUID,
     *,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> bool:
     """Revoke an active DSN key. Return True if one was revoked.
 
     Scoped by RLS to ``org_id`` and additionally matched on ``project_id`` and
     the active status, so re-revoking an already-revoked key (or a key from a
-    different project) affects zero rows.
+    different project) affects zero rows (and is never audited on a no-op).
     """
     async with tenant_session(str(org_id), session_factory=session_factory) as session:
         result = await session.execute(
@@ -289,7 +347,18 @@ async def revoke_dsn_key(
             ),
             {"now": _utcnow(), "kid": str(key_id), "pid": str(project_id)},
         )
-    return result.rowcount > 0
+        if result.rowcount == 0:
+            return False
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=actor_user_id,
+            action="key.revoked",
+            target_type="dsn_key",
+            target_id=str(key_id),
+            data={"project_id": str(project_id)},
+        )
+    return True
 
 
 async def list_members(

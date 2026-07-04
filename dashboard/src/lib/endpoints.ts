@@ -5,6 +5,7 @@ import type {
   AcceptInviteResult,
   AlertChannel,
   AlertChannelType,
+  AuditLogListResult,
   AuthResult,
   CreateInviteResult,
   DsnKey,
@@ -314,4 +315,31 @@ export function createInvite(
     method: "POST",
     body: { email, role },
   });
+}
+
+// --- Audit log (Activity, org settings) ---------------------------------------
+export interface ListAuditLogParams {
+  page?: number;
+  perPage?: number;
+  action?: string;
+}
+
+export function listAuditLog(
+  orgId: string,
+  params: ListAuditLogParams = {},
+): Promise<AuditLogListResult> {
+  const query = new URLSearchParams();
+  if (params.page) {
+    query.set("page", String(params.page));
+  }
+  if (params.perPage) {
+    query.set("per_page", String(params.perPage));
+  }
+  if (params.action) {
+    query.set("action", params.action);
+  }
+  const suffix = query.toString();
+  return apiRequest<AuditLogListResult>(
+    `/orgs/${orgId}/audit-log${suffix ? `?${suffix}` : ""}`,
+  );
 }

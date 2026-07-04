@@ -468,7 +468,8 @@ async def test_resolve_captures_latest_release(
             {"o": org_a, "p": project_a, "v": "web@2.0.0"},
         )
     resolved = await issues.set_issue_status(
-        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert resolved is not None
     assert resolved["status"] == "resolved"
@@ -488,7 +489,8 @@ async def test_resolve_with_no_releases_records_null(
     )
     issue_id = uuid.UUID(res["issue_id"])
     resolved = await issues.set_issue_status(
-        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert resolved is not None
     assert resolved["resolved_in_release"] is None
@@ -504,7 +506,8 @@ async def test_same_release_event_does_not_regress(
     issue_id = uuid.UUID(res["issue_id"])
     # Resolve: captures web@1.0.0 (the only release) as the fix release.
     resolved = await issues.set_issue_status(
-        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert resolved is not None and resolved["resolved_in_release"] == "web@1.0.0"
 
@@ -529,7 +532,8 @@ async def test_newer_release_regresses_records_and_signals(
     res = await _process(app_sessionmaker, org_a, project_a, env1)
     issue_id = uuid.UUID(res["issue_id"])
     resolved = await issues.set_issue_status(
-        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert resolved is not None and resolved["resolved_in_release"] == "web@1.0.0"
 
@@ -577,7 +581,8 @@ async def test_no_release_event_regresses_rule_b(
     res = await _process(app_sessionmaker, org_a, project_a, env1)
     issue_id = uuid.UUID(res["issue_id"])
     resolved = await issues.set_issue_status(
-        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert resolved is not None and resolved["resolved_in_release"] == "web@1.0.0"
 
@@ -603,7 +608,8 @@ async def test_reopen_clears_both_release_fields(
     res = await _process(app_sessionmaker, org_a, project_a, env1)
     issue_id = uuid.UUID(res["issue_id"])
     await issues.set_issue_status(
-        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     async with superuser_engine.begin() as conn:
         await conn.execute(
@@ -625,7 +631,8 @@ async def test_reopen_clears_both_release_fields(
 
     # Reopen clears BOTH release fields and restores unresolved.
     reopened = await issues.set_issue_status(
-        org_a, project_a, issue_id, "reopen", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "reopen", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert reopened is not None
     assert reopened["status"] == "unresolved"
@@ -642,7 +649,8 @@ async def test_ignore_clears_regressed_release_keeps_fix(
     res = await _process(app_sessionmaker, org_a, project_a, env1)
     issue_id = uuid.UUID(res["issue_id"])
     await issues.set_issue_status(
-        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     async with superuser_engine.begin() as conn:
         await conn.execute(
@@ -658,7 +666,8 @@ async def test_ignore_clears_regressed_release_keeps_fix(
     )
     # Ignore clears the came-back release but keeps the recorded fix release.
     ignored = await issues.set_issue_status(
-        org_a, project_a, issue_id, "ignore", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "ignore", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert ignored is not None
     assert ignored["status"] == "ignored"

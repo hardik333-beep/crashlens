@@ -201,3 +201,26 @@ export interface CreateInviteResult {
   invite: { id: string; email: string; role: string; expires_at: string };
   token: string;
 }
+
+// --- Audit log (org settings "Activity" view) ---------------------------------
+export interface AuditLogEntry {
+  id: string;
+  actor_user_id: string | null;
+  // Resolved server-side; null when there is no actor OR the actor's account is
+  // gone. Either case renders as "Former teammate" in the Activity table.
+  actor_email: string | null;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  // Small identifying facts only (names, versions, masked targets) -- never a
+  // secret. Rendered inline, key by key, next to the action.
+  data: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AuditLogListResult {
+  entries: AuditLogEntry[];
+  total: number;
+  page: number;
+  per_page: number;
+}

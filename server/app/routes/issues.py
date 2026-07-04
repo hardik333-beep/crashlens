@@ -162,7 +162,9 @@ async def _apply_action(
     issue_id: uuid.UUID,
     action: str,
 ) -> IssueDetailOut:
-    updated = await issues.set_issue_status(ctx.org_id, project_id, issue_id, action)
+    updated = await issues.set_issue_status(
+        ctx.org_id, project_id, issue_id, action, actor_user_id=ctx.user.id
+    )
     if updated is None:
         raise _ISSUE_NOT_FOUND
     # Return the full refreshed detail so the UI updates the header, actions, and
@@ -222,7 +224,7 @@ async def assign_issue(
 ) -> IssueDetailOut:
     try:
         detail = await issues.assign_issue(
-            ctx.org_id, project_id, issue_id, body.user_id
+            ctx.org_id, project_id, issue_id, body.user_id, actor_user_id=ctx.user.id
         )
     except issues.InvalidAssigneeError as exc:
         raise HTTPException(
@@ -284,6 +286,8 @@ async def delete_issue(
     issue_id: uuid.UUID,
     ctx: Annotated[OrgContext, Depends(require_org_admin)],
 ) -> None:
-    deleted = await issues.delete_issue(ctx.org_id, project_id, issue_id)
+    deleted = await issues.delete_issue(
+        ctx.org_id, project_id, issue_id, actor_user_id=ctx.user.id
+    )
     if not deleted:
         raise _ISSUE_NOT_FOUND

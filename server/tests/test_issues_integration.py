@@ -207,6 +207,7 @@ async def test_list_filters_by_status(app_sessionmaker, two_orgs) -> None:
     resolved = await issues.set_issue_status(
         org_a, project_a, uuid.UUID(r1["issue_id"]), "resolve",
         session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert resolved is not None and resolved["status"] == "resolved"
 
@@ -384,23 +385,27 @@ async def test_status_transitions_are_idempotent(app_sessionmaker, two_orgs) -> 
     assert await status_of() == "unresolved"
 
     ignored = await issues.set_issue_status(
-        org_a, project_a, issue_id, "ignore", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "ignore", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert ignored is not None and ignored["status"] == "ignored"
     # Idempotent: ignoring again keeps it ignored.
     again = await issues.set_issue_status(
-        org_a, project_a, issue_id, "ignore", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "ignore", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert again is not None and again["status"] == "ignored"
 
     resolved = await issues.set_issue_status(
-        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert resolved is not None and resolved["status"] == "resolved"
 
     # Reopen from resolved.
     reopened = await issues.set_issue_status(
-        org_a, project_a, issue_id, "reopen", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "reopen", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert reopened is not None and reopened["status"] == "unresolved"
 
@@ -408,7 +413,8 @@ async def test_status_transitions_are_idempotent(app_sessionmaker, two_orgs) -> 
 async def test_action_on_missing_issue_is_none(app_sessionmaker, two_orgs) -> None:
     org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
     result = await issues.set_issue_status(
-        org_a, project_a, uuid.uuid4(), "resolve", session_factory=app_sessionmaker
+        org_a, project_a, uuid.uuid4(), "resolve", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert result is None
 
@@ -427,7 +433,8 @@ async def test_resolve_after_regression_clears_came_back_marker(
     res = await _seed_event(app_sessionmaker, org_a, project_a, env1)
     issue_id = uuid.UUID(res["issue_id"])
     first = await issues.set_issue_status(
-        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert first is not None and first["resolved_in_release"] == "web@1.0.0"
 
@@ -456,7 +463,8 @@ async def test_resolve_after_regression_clears_came_back_marker(
     # Re-resolving records the latest release as the fix AND clears the
     # came-back marker in the same statement.
     second = await issues.set_issue_status(
-        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert second is not None
     assert second["status"] == "resolved"
@@ -474,13 +482,15 @@ async def test_delete_issue_removes_issue_but_keeps_events(
     issue_id = uuid.UUID(res["issue_id"])
 
     deleted = await issues.delete_issue(
-        org_a, project_a, issue_id, session_factory=app_sessionmaker
+        org_a, project_a, issue_id, session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert deleted is True
     # Second delete is a no-op (already gone).
     assert (
         await issues.delete_issue(
-            org_a, project_a, issue_id, session_factory=app_sessionmaker
+            org_a, project_a, issue_id, session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         is False
     )
@@ -529,7 +539,8 @@ async def test_assign_issue_to_member_sets_assignee_and_email(
         )
     try:
         detail = await issues.assign_issue(
-            org_a, project_a, issue_id, member_id, session_factory=app_sessionmaker
+            org_a, project_a, issue_id, member_id, session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert detail is not None
         assert detail["assigned_to"] == str(member_id)
@@ -537,7 +548,8 @@ async def test_assign_issue_to_member_sets_assignee_and_email(
 
         # Unassign: assigned_to and assigned_to_email both go back to None.
         unassigned = await issues.assign_issue(
-            org_a, project_a, issue_id, None, session_factory=app_sessionmaker
+            org_a, project_a, issue_id, None, session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert unassigned is not None
         assert unassigned["assigned_to"] is None
@@ -572,7 +584,8 @@ async def test_assign_issue_to_non_member_is_invalid(
     try:
         with pytest.raises(issues.InvalidAssigneeError):
             await issues.assign_issue(
-                org_a, project_a, issue_id, outsider_id, session_factory=app_sessionmaker
+                org_a, project_a, issue_id, outsider_id, session_factory=app_sessionmaker,
+                actor_user_id=None,
             )
         # The failed attempt did not change the assignee.
         detail = await issues.get_issue(
@@ -588,7 +601,8 @@ async def test_assign_issue_to_non_member_is_invalid(
 async def test_assign_missing_issue_is_none(app_sessionmaker, two_orgs) -> None:
     org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
     result = await issues.assign_issue(
-        org_a, project_a, uuid.uuid4(), None, session_factory=app_sessionmaker
+        org_a, project_a, uuid.uuid4(), None, session_factory=app_sessionmaker,
+        actor_user_id=None,
     )
     assert result is None
 
@@ -725,20 +739,23 @@ async def test_cross_org_issue_isolation(app_sessionmaker, two_orgs) -> None:
     )
     assert (
         await issues.set_issue_status(
-            org_b, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+            org_b, project_a, issue_id, "resolve", session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         is None
     )
     assert (
         await issues.delete_issue(
-            org_b, project_a, issue_id, session_factory=app_sessionmaker
+            org_b, project_a, issue_id, session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         is False
     )
     # Org B cannot assign or comment on org A's issue either.
     assert (
         await issues.assign_issue(
-            org_b, project_a, issue_id, None, session_factory=app_sessionmaker
+            org_b, project_a, issue_id, None, session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         is None
     )

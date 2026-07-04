@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app import audit
 from app.db import tenant_session
 
 # The three channel types the schema's CHECK constraint allows
@@ -190,6 +191,7 @@ async def create_channel(
     config: object,
     project_id: uuid.UUID | None,
     *,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict | None:
     """Create an alert channel and return it, or None if ``project_id`` is not in the org.
@@ -199,6 +201,10 @@ async def create_channel(
     confirmed to belong to this org under RLS before the INSERT, so a channel can
     never be pinned to another org's project (returns None -> 404 otherwise). The
     INSERT runs inside ``tenant_session(org_id)`` so WITH CHECK passes.
+
+    ``actor_user_id`` is recorded on the "channel.created" audit row. The row's
+    ``data`` carries ``mask_target``'s display-safe summary, never the raw
+    webhook/URL secret.
     """
     normalized = validate_channel_config(channel_type, config)
     channel_id = uuid.uuid4()
@@ -224,6 +230,15 @@ async def create_channel(
                 },
             )
         ).one()
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=actor_user_id,
+            action="channel.created",
+            target_type="alert_channel",
+            target_id=str(channel_id),
+            data={"type": channel_type, "target": mask_target(channel_type, normalized)},
+        )
     return _channel_dict(row)
 
 
@@ -233,6 +248,7 @@ async def update_channel(
     *,
     enabled: bool | None = None,
     config: object = None,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict | None:
     """Enable/disable a channel and/or replace its config. Return the row, or None.
@@ -241,6 +257,11 @@ async def update_channel(
     so the caller cannot repurpose a channel to another type. RLS scopes the read
     and the UPDATE to ``org_id``; a channel in another org is simply not found
     (None -> 404), never cross-tenant written.
+
+    ``actor_user_id`` is recorded on the "channel.updated" audit row, written
+    only when an assignment actually ran (the "nothing to change" no-op path is
+    never audited). ``data`` never carries the raw config, only which facets
+    changed (``enabled``'s new value, and whether the config was replaced).
     """
     async with tenant_session(str(org_id), session_factory=session_factory) as session:
         current = (
@@ -257,13 +278,16 @@ async def update_channel(
 
         params: dict[str, object] = {"cid": str(channel_id)}
         assignments: list[str] = []
+        audit_data: dict[str, object] = {}
         if enabled is not None:
             assignments.append("enabled = :enabled")
             params["enabled"] = enabled
+            audit_data["enabled"] = enabled
         if config is not None:
             normalized = validate_channel_config(current.type, config)
             assignments.append("config = CAST(:config AS jsonb)")
             params["config"] = json.dumps(normalized)
+            audit_data["target"] = mask_target(current.type, normalized)
 
         if not assignments:
             # Nothing to change: return the current row unchanged.
@@ -279,6 +303,15 @@ async def update_channel(
                 params,
             )
         ).one()
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=actor_user_id,
+            action="channel.updated",
+            target_type="alert_channel",
+            target_id=str(channel_id),
+            data=audit_data,
+        )
     return _channel_dict(row)
 
 
@@ -286,17 +319,33 @@ async def delete_channel(
     org_id: uuid.UUID,
     channel_id: uuid.UUID,
     *,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> bool:
     """Delete a channel. Return True if one was deleted.
 
     RLS scopes the DELETE to ``org_id``, so a channel in another org is not
     visible and the delete affects zero rows (reported as a 404, not a
-    cross-tenant delete).
+    cross-tenant delete). ``actor_user_id`` is recorded on the "channel.deleted"
+    audit row, written only when a channel was actually found and deleted; its
+    ``type`` is captured via ``RETURNING`` for the audit trail.
     """
     async with tenant_session(str(org_id), session_factory=session_factory) as session:
-        result = await session.execute(
-            text("DELETE FROM alert_channels WHERE id = :cid"),
-            {"cid": str(channel_id)},
+        row = (
+            await session.execute(
+                text("DELETE FROM alert_channels WHERE id = :cid RETURNING type"),
+                {"cid": str(channel_id)},
+            )
+        ).one_or_none()
+        if row is None:
+            return False
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=actor_user_id,
+            action="channel.deleted",
+            target_type="alert_channel",
+            target_id=str(channel_id),
+            data={"type": row.type},
         )
-    return result.rowcount > 0
+    return True

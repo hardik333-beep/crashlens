@@ -52,8 +52,11 @@ async def create_invite(
             detail=f"role must be one of {_VALID_ROLES}.",
         )
     # ctx.org_id is the VERIFIED org id (require_org_admin confirmed the caller is
-    # an admin of it); it is safe to scope the write.
-    invite, raw_token = await accounts.create_invite(ctx.org_id, body.email, body.role)
+    # an admin of it); it is safe to scope the write. ctx.user.id is the verified
+    # actor recorded on the "member.invited" audit row.
+    invite, raw_token = await accounts.create_invite(
+        ctx.org_id, body.email, body.role, actor_user_id=ctx.user.id
+    )
     return CreateInviteResponse(
         invite=InviteOut(
             id=str(invite["id"]),

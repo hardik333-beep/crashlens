@@ -36,7 +36,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app import security
+from app import audit, security
 from app.db import get_sessionmaker, system_session, tenant_session
 from app.models.schema import User
 
@@ -179,6 +179,13 @@ async def signup(
     exists (the caller renders an indistinguishable generic response so signup
     does not leak which emails are registered). The password is hashed
     unconditionally so an existing-email request does the same Argon2 work.
+
+    NOT AUDITED (deliberate, W6-02 scope decision): org genesis has no admin
+    reader yet to consult an audit trail -- the org, its first admin, and their
+    membership are all created in this single call, so there is no pre-existing
+    org context for an actor to act "within" the way every other audited action
+    has one. The org's audit log therefore starts empty at signup and gains its
+    first row on the next sensitive action a member takes.
     """
     existing = await load_user_by_email(email, session_factory=session_factory)
     # Hash regardless of existence so timing does not separate the two paths.
@@ -288,6 +295,7 @@ async def create_invite(
     email: str,
     role: str,
     *,
+    actor_user_id: uuid.UUID | None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> tuple[dict, str]:
     """Create an org invite and return (invite metadata, raw token once).
@@ -296,6 +304,10 @@ async def create_invite(
     verified admin context (see require_org_admin); it is used to scope the
     write via tenant_session. Delivering the raw token by email is the alerts
     slice's job, so it is returned to the caller exactly once here.
+
+    ``actor_user_id`` is the verified admin creating the invite (audit action
+    ``member.invited``); the audit row is written in this SAME transaction so it
+    commits or rolls back with the invite row together.
     """
     if role not in _VALID_ROLES:
         raise ValueError(f"role must be one of {_VALID_ROLES}")
@@ -320,6 +332,15 @@ async def create_invite(
                 "th": token_hash,
                 "exp": expires_at,
             },
+        )
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=actor_user_id,
+            action="member.invited",
+            target_type="invite",
+            target_id=str(invite_id),
+            data={"email": email, "role": role},
         )
 
     invite = {
@@ -346,6 +367,13 @@ async def accept_invite(
     caller renders one uniform error. Raises PasswordPolicyError only when a NEW
     user supplies a password that fails policy (that concerns the password, not
     the token, and the caller already holds a valid secret).
+
+    AUDITED as ``invite.accepted`` with the ACCEPTING user as actor: unlike every
+    other audited action there is no separate "caller" and "actor" here -- the
+    person completing the flow IS the actor, resolved from the invite/signup
+    logic in this function rather than passed in (no route-level ``OrgContext``
+    exists yet at this point in the flow, since the user is not authenticated
+    until this call succeeds).
     """
     token_hash = security.hash_invite_token(token)
     now = _utcnow()
@@ -411,6 +439,15 @@ async def accept_invite(
                 "WHERE id = :id AND accepted_at IS NULL"
             ),
             {"now": now, "id": str(invite.id)},
+        )
+        await audit.record(
+            session,
+            org_id=org_id,
+            actor_user_id=user_id,
+            action="invite.accepted",
+            target_type="invite",
+            target_id=str(invite.id),
+            data={"email": email, "role": role},
         )
 
     return {"user_id": user_id, "email": email, "org_id": org_id, "role": role}

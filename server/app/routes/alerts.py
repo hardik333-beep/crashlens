@@ -85,7 +85,7 @@ async def create_alert_channel(
     project_id = _parse_project_id(body.project_id)
     try:
         channel = await alerts.create_channel(
-            ctx.org_id, body.type, body.config, project_id
+            ctx.org_id, body.type, body.config, project_id, actor_user_id=ctx.user.id
         )
     except alerts.ChannelConfigError as exc:
         raise HTTPException(
@@ -115,6 +115,7 @@ async def update_alert_channel(
             channel_id,
             enabled=body.enabled,
             config=body.config,
+            actor_user_id=ctx.user.id,
         )
     except alerts.ChannelConfigError as exc:
         raise HTTPException(
@@ -133,7 +134,9 @@ async def delete_alert_channel(
     channel_id: uuid.UUID,
     ctx: Annotated[OrgContext, Depends(require_org_admin)],
 ) -> None:
-    deleted = await alerts.delete_channel(ctx.org_id, channel_id)
+    deleted = await alerts.delete_channel(
+        ctx.org_id, channel_id, actor_user_id=ctx.user.id
+    )
     if not deleted:
         raise _CHANNEL_NOT_FOUND
 

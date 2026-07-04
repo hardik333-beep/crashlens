@@ -111,7 +111,8 @@ async def test_project_and_key_crud_lifecycle(
     try:
         # Create + list.
         created = await projects.create_project(
-            org_id, "Payments API", "python", session_factory=app_sessionmaker
+            org_id, "Payments API", "python", session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert created is not None
         assert created["name"] == "Payments API"
@@ -130,7 +131,8 @@ async def test_project_and_key_crud_lifecycle(
 
         # Create a key; it appears active in the detail.
         key = await projects.create_dsn_key(
-            org_id, created["id"], session_factory=app_sessionmaker
+            org_id, created["id"], session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert key is not None
         assert key["status"] == "active"
@@ -144,7 +146,8 @@ async def test_project_and_key_crud_lifecycle(
 
         # Revoke it; it drops out of the active detail.
         revoked = await projects.revoke_dsn_key(
-            org_id, created["id"], key["id"], session_factory=app_sessionmaker
+            org_id, created["id"], key["id"], session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert revoked is True
         detail = await projects.get_project(
@@ -156,7 +159,8 @@ async def test_project_and_key_crud_lifecycle(
         # Re-revoking the same key is a no-op (already revoked).
         assert (
             await projects.revoke_dsn_key(
-                org_id, created["id"], key["id"], session_factory=app_sessionmaker
+                org_id, created["id"], key["id"], session_factory=app_sessionmaker,
+                actor_user_id=None,
             )
             is False
         )
@@ -164,7 +168,8 @@ async def test_project_and_key_crud_lifecycle(
         # Delete the project.
         assert (
             await projects.delete_project(
-                org_id, created["id"], session_factory=app_sessionmaker
+                org_id, created["id"], session_factory=app_sessionmaker,
+                actor_user_id=None,
             )
             is True
         )
@@ -173,7 +178,8 @@ async def test_project_and_key_crud_lifecycle(
         )
         assert (
             await projects.delete_project(
-                org_id, created["id"], session_factory=app_sessionmaker
+                org_id, created["id"], session_factory=app_sessionmaker,
+                actor_user_id=None,
             )
             is False
         )
@@ -189,19 +195,23 @@ async def test_revoked_key_excluded_from_active_list(
         org_id = await _seed_org(conn, "KeysCo")
     try:
         project = await projects.create_project(
-            org_id, "Web", None, session_factory=app_sessionmaker
+            org_id, "Web", None, session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert project is not None
         key_a = await projects.create_dsn_key(
-            org_id, project["id"], session_factory=app_sessionmaker
+            org_id, project["id"], session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         key_b = await projects.create_dsn_key(
-            org_id, project["id"], session_factory=app_sessionmaker
+            org_id, project["id"], session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert key_a is not None and key_b is not None
 
         await projects.revoke_dsn_key(
-            org_id, project["id"], key_a["id"], session_factory=app_sessionmaker
+            org_id, project["id"], key_a["id"], session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         detail = await projects.get_project(
             org_id, project["id"], session_factory=app_sessionmaker
@@ -250,11 +260,13 @@ async def test_cross_org_isolation_under_rls(
         org_b = await _seed_org(conn, "OrgB")
     try:
         project = await projects.create_project(
-            org_a, "Secret A", None, session_factory=app_sessionmaker
+            org_a, "Secret A", None, session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert project is not None
         key = await projects.create_dsn_key(
-            org_a, project["id"], session_factory=app_sessionmaker
+            org_a, project["id"], session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         assert key is not None
 
@@ -270,19 +282,22 @@ async def test_cross_org_isolation_under_rls(
         )
         assert (
             await projects.create_dsn_key(
-                org_b, project["id"], session_factory=app_sessionmaker
+                org_b, project["id"], session_factory=app_sessionmaker,
+                actor_user_id=None,
             )
             is None
         )
         assert (
             await projects.revoke_dsn_key(
-                org_b, project["id"], key["id"], session_factory=app_sessionmaker
+                org_b, project["id"], key["id"], session_factory=app_sessionmaker,
+                actor_user_id=None,
             )
             is False
         )
         assert (
             await projects.delete_project(
-                org_b, project["id"], session_factory=app_sessionmaker
+                org_b, project["id"], session_factory=app_sessionmaker,
+                actor_user_id=None,
             )
             is False
         )

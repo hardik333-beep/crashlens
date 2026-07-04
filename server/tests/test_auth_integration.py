@@ -281,7 +281,8 @@ async def test_create_invite_stores_only_the_hash(
         org_id = await _seed_org(conn, "InviteCo")
     try:
         invite, raw_token = await accounts.create_invite(
-            org_id, "invitee@example.test", "member", session_factory=app_sessionmaker
+            org_id, "invitee@example.test", "member", session_factory=app_sessionmaker,
+            actor_user_id=None,
         )
         async with superuser_engine.connect() as conn:
             row = (
