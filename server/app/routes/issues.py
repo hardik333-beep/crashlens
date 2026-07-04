@@ -35,6 +35,10 @@ class IssueListItem(BaseModel):
     last_seen: str
     event_count: int
     assigned_to: str | None
+    # Release-tracking fields (W5-02): the release an error was marked fixed in,
+    # and the release it came back in on a regression. Both null until set.
+    resolved_in_release: str | None
+    regressed_in_release: str | None
 
 
 class IssueListOut(BaseModel):

@@ -7,6 +7,7 @@ and title derivation.
 """
 
 import copy
+import datetime
 
 from app.jobs.process_event import (
     CONTEXT_LINE_MAX,
@@ -21,6 +22,7 @@ from app.jobs.process_event import (
     TITLE_MAX,
     TRUNCATION_MARKER,
     compute_fingerprint,
+    decide_regression,
     derive_title,
     normalize_envelope,
     normalize_message,
@@ -385,3 +387,45 @@ def test_title_uses_top_level_exception_not_root_cause() -> None:
         "cause": {"type": "ValueError", "value": "inner", "stacktrace": {"frames": []}},
     }
     assert derive_title(normalize_envelope(env)) == "RuntimeError: outer failure"
+
+
+# --- decide_regression: the release-aware a/b/c matrix (W5-02) -----------------
+_OLDER = datetime.datetime(2026, 7, 1, tzinfo=datetime.UTC)
+_NEWER = datetime.datetime(2026, 7, 2, tzinfo=datetime.UTC)
+
+
+def test_regression_rule_a_no_fix_release_always_regresses() -> None:
+    # (a) A legacy resolve with no recorded fix release -> ANY event regresses,
+    # regardless of the event's release order.
+    assert decide_regression(None, "v2", _OLDER, None) is True
+    assert decide_regression("", "v2", _OLDER, None) is True
+    assert decide_regression(None, None, None, None) is True
+
+
+def test_regression_rule_b_event_without_release_regresses() -> None:
+    # (b) Fix release known, but the event carries no release (untagged build) ->
+    # regress (FLAGGED BY DESIGN: safest default).
+    assert decide_regression("v1", None, None, _OLDER) is True
+    assert decide_regression("v1", "", None, _OLDER) is True
+
+
+def test_regression_rule_c_strictly_newer_regresses() -> None:
+    # (c) Event release first-seen strictly AFTER the fix release -> regress.
+    assert decide_regression("v1", "v2", _NEWER, _OLDER) is True
+
+
+def test_regression_rule_c_same_release_does_not_regress() -> None:
+    # Same release (identical created_at) is not "newer" -> no regress.
+    assert decide_regression("v1", "v1", _OLDER, _OLDER) is False
+
+
+def test_regression_rule_c_older_release_does_not_regress() -> None:
+    # A straggler from a build OLDER than the fix -> no regress.
+    assert decide_regression("v1", "v0", _OLDER, _NEWER) is False
+
+
+def test_regression_unorderable_release_defaults_to_regress() -> None:
+    # Fix release recorded but a release row is missing its timestamp (unorderable)
+    # -> safe default regresses (FLAGGED).
+    assert decide_regression("v1", "v2", _NEWER, None) is True
+    assert decide_regression("v1", "v2", None, _OLDER) is True

@@ -209,7 +209,13 @@ async def _load_project_row(session: AsyncSession, project_id: uuid.UUID) -> obj
 
 
 def _issue_dict(row: object) -> dict:
-    """Shape one issue row into the list/detail base fields."""
+    """Shape one issue row into the list/detail base fields.
+
+    ``resolved_in_release`` / ``regressed_in_release`` are the release-tracking
+    fields (W5-02): the release an Issue was marked fixed in, and the release it
+    came back in on a regression. Both are NULL until set. They come from the one
+    shared shape so the list and detail views stay coherent.
+    """
     assigned_to = row.assigned_to  # type: ignore[attr-defined]
     return {
         "id": str(row.id),  # type: ignore[attr-defined]
@@ -220,6 +226,8 @@ def _issue_dict(row: object) -> dict:
         "last_seen": row.last_seen.isoformat(),  # type: ignore[attr-defined]
         "event_count": int(row.event_count),  # type: ignore[attr-defined]
         "assigned_to": str(assigned_to) if assigned_to is not None else None,
+        "resolved_in_release": row.resolved_in_release,  # type: ignore[attr-defined]
+        "regressed_in_release": row.regressed_in_release,  # type: ignore[attr-defined]
     }
 
 
@@ -267,7 +275,8 @@ async def list_issues(
             await session.execute(
                 text(
                     "SELECT id, title, level, status, first_seen, last_seen, "
-                    "event_count, assigned_to FROM issues "
+                    "event_count, assigned_to, resolved_in_release, "
+                    "regressed_in_release FROM issues "
                     f"WHERE {where_sql} ORDER BY {order_by} "
                     "LIMIT :limit OFFSET :offset"
                 ),
@@ -304,7 +313,8 @@ async def get_issue(
             await session.execute(
                 text(
                     "SELECT id, title, level, status, first_seen, last_seen, "
-                    "event_count, assigned_to FROM issues "
+                    "event_count, assigned_to, resolved_in_release, "
+                    "regressed_in_release FROM issues "
                     "WHERE id = :iid AND project_id = :pid"
                 ),
                 {"iid": str(issue_id), "pid": str(project_id)},
@@ -406,14 +416,35 @@ async def _load_assignee_email(
     return emails.get(assignee_id)
 
 
-# The three action verbs map to a target status. Reopen restores ``unresolved``
-# from ANY state; resolve/ignore set their target from any state; all are
-# idempotent (re-applying the same status is a harmless no-op update).
-_ACTION_STATUS = {
-    "resolve": "resolved",
-    "ignore": "ignored",
-    "reopen": "unresolved",
+# The three action verbs map to the SET clause that applies them, including the
+# release-tracking bookkeeping (W5-02):
+#   * resolve captures the fix release = the project's LATEST release (MAX
+#     created_at, i.e. the most recently first-seen version), or NULL when the
+#     project has no releases yet. It does NOT clear regressed_in_release (only
+#     reopen/ignore do).
+#   * ignore clears regressed_in_release (the "came back in" badge should not
+#     linger on a muted Issue) but leaves any recorded fix release.
+#   * reopen restores unresolved and clears BOTH release fields (a fresh start).
+# Reopen restores from ANY state; all are idempotent (re-applying the same status
+# rewrites the same values). Each fragment is a fixed, server-controlled string
+# (never client input), so interpolating it carries no injection risk.
+_ACTION_SET_SQL = {
+    "resolve": (
+        "status = 'resolved', resolved_in_release = ("
+        "SELECT version FROM releases WHERE project_id = :pid "
+        "ORDER BY created_at DESC, version DESC LIMIT 1)"
+    ),
+    "ignore": "status = 'ignored', regressed_in_release = NULL",
+    "reopen": (
+        "status = 'unresolved', resolved_in_release = NULL, "
+        "regressed_in_release = NULL"
+    ),
 }
+
+_STATUS_RETURNING = (
+    "RETURNING id, title, level, status, first_seen, last_seen, "
+    "event_count, assigned_to, resolved_in_release, regressed_in_release"
+)
 
 
 async def set_issue_status(
@@ -428,23 +459,26 @@ async def set_issue_status(
 
     Returns the updated issue dict, or None if the project or issue is not
     visible in this org (a 404, not a cross-tenant write). Idempotent: applying
-    the status an issue already holds simply rewrites the same value. RLS scopes
-    the UPDATE to ``org_id`` and it is additionally matched on ``project_id`` so
-    an issue reached through the wrong project URL is not touched.
+    the status an issue already holds simply rewrites the same values. On
+    ``resolve`` the project's latest release is recorded as the fix release; on
+    ``reopen``/``ignore`` the came-back-in release is cleared (reopen also clears
+    the fix release). RLS scopes the UPDATE to ``org_id`` and it is additionally
+    matched on ``project_id`` so an issue reached through the wrong project URL is
+    not touched. The ``releases`` subquery on ``resolve`` runs in the same
+    RLS-scoped session, so only this org's releases are visible to it.
     """
-    target = _ACTION_STATUS[action]
+    set_clause = _ACTION_SET_SQL[action]
     async with tenant_session(str(org_id), session_factory=session_factory) as session:
         if await _load_project_row(session, project_id) is None:
             return None
         row = (
             await session.execute(
                 text(
-                    "UPDATE issues SET status = :status "
+                    f"UPDATE issues SET {set_clause} "
                     "WHERE id = :iid AND project_id = :pid "
-                    "RETURNING id, title, level, status, first_seen, last_seen, "
-                    "event_count, assigned_to"
+                    f"{_STATUS_RETURNING}"
                 ),
-                {"status": target, "iid": str(issue_id), "pid": str(project_id)},
+                {"iid": str(issue_id), "pid": str(project_id)},
             )
         ).one_or_none()
     if row is None:

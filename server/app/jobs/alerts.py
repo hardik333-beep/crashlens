@@ -96,20 +96,34 @@ def alert_link(
     return path
 
 
-def alert_body(kind: str, project_name: str, title: str, level: str, link: str) -> str:
-    """Return the plain-text body shared by email and Slack messages."""
-    headline = (
-        "An error that was resolved has started happening again."
-        if kind == "regression"
-        else "A new error just showed up."
-    )
-    return (
+def alert_body(
+    kind: str,
+    project_name: str,
+    title: str,
+    level: str,
+    link: str,
+    release: str | None = None,
+) -> str:
+    """Return the plain-text body shared by email and Slack messages.
+
+    For a regression, when the came-back-in ``release`` is known the headline
+    names it ("...came back in <release>"); otherwise it reads the same as before.
+    """
+    if kind == "regression":
+        headline = "An error that was resolved has started happening again."
+        if release:
+            headline += f" It came back in {release}."
+    else:
+        headline = "A new error just showed up."
+    body = (
         f"{headline}\n\n"
         f"Project: {project_name}\n"
         f"Error: {title}\n"
-        f"Level: {level}\n\n"
-        f"See it here: {link}\n"
+        f"Level: {level}\n"
     )
+    if kind == "regression" and release:
+        body += f"Release: {release}\n"
+    return body + f"\nSee it here: {link}\n"
 
 
 def webhook_payload(
@@ -119,9 +133,14 @@ def webhook_payload(
     title: str,
     level: str,
     ts: str,
+    release: str | None = None,
 ) -> dict:
-    """Return the JSON body POSTed to a generic webhook channel."""
-    return {
+    """Return the JSON body POSTed to a generic webhook channel.
+
+    ``release`` (the came-back-in release for a regression) is included only when
+    known, so a "new"-issue payload keeps its existing shape unchanged.
+    """
+    payload = {
         "kind": kind,
         "project_id": project_id,
         "issue_id": issue_id,
@@ -129,6 +148,9 @@ def webhook_payload(
         "level": level,
         "ts": ts,
     }
+    if release is not None:
+        payload["release"] = release
+    return payload
 
 
 def smtp_is_configured(settings: Settings) -> bool:
@@ -271,14 +293,17 @@ async def dispatch_alerts(
     kind: str,
     title: str,
     level: str,
+    release: str | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict:
     """Deliver a new-issue / regression alert to every enabled channel for the org.
 
     Producer contract (``app/jobs/process_event.py``): all ids are server-derived
     (never client input); ``kind`` is ``"new"`` or ``"regression"``; ``title`` and
-    ``level`` describe the Issue. ``session_factory`` is injectable for tests;
-    arq calls this with only ``ctx`` + the keyword contract.
+    ``level`` describe the Issue; ``release`` is the came-back-in release on a
+    regression (``None`` otherwise / for an untagged build). ``session_factory``
+    is injectable for tests; arq calls this with only ``ctx`` + the keyword
+    contract.
 
     Per-channel isolation: each delivery is wrapped so one failing channel logs a
     WARNING (channel id + type only, never the URL/recipients/body) and the rest
@@ -301,7 +326,7 @@ async def dispatch_alerts(
 
     subject = alert_subject(kind, project_name, title)
     link = alert_link(settings.public_base_url, org_id, project_id, issue_id)
-    body = alert_body(kind, project_name, title, level, link)
+    body = alert_body(kind, project_name, title, level, link, release)
     payload = webhook_payload(
         kind,
         project_id,
@@ -309,6 +334,7 @@ async def dispatch_alerts(
         title,
         level,
         datetime.datetime.now(datetime.UTC).isoformat(),
+        release,
     )
 
     # Resolve the default email recipient roster once, lazily, only if an email

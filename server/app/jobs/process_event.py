@@ -27,8 +27,14 @@ off the request path:
 4. UPSERT the Issue and INSERT the event row in ONE transaction (atomic): a new
    fingerprint creates an Issue; a repeat increments its counter and advances
    ``last_seen``. A new event on a ``resolved`` Issue flips it to ``regressed``
-   (base regression behaviour; release-aware regression is a later slice);
-   ``ignored`` stays ``ignored``.
+   ONLY when the event is release-aware "newer than the fix" (see
+   :func:`decide_regression` and W5-02): the fix release is recorded on resolve
+   as ``issues.resolved_in_release`` and a new event regresses the Issue only if
+   the fix release is unknown, the event carries no release, or the event's
+   release is first-seen STRICTLY NEWER than the fix release. Same/older-build
+   stragglers still increment counts but do NOT regress. ``ignored`` stays
+   ``ignored``. A non-empty ``release`` on the envelope is also recorded in the
+   ``releases`` table (INSERT ... ON CONFLICT DO NOTHING) in the SAME transaction.
 
 SECRETS / PII HYGIENE: this module logs ONLY ids and counters. It NEVER logs
 payload contents, messages, tag values, or stack frames.
@@ -300,6 +306,45 @@ def _coerce_timestamp(value: str) -> datetime.datetime:
     return datetime.datetime.now(datetime.UTC)
 
 
+def decide_regression(
+    resolved_in_release: str | None,
+    event_release: str | None,
+    event_release_created_at: datetime.datetime | None,
+    resolved_release_created_at: datetime.datetime | None,
+) -> bool:
+    """Decide whether a RESOLVED Issue regresses on a new event (release-aware).
+
+    "Newer" is FIRST-SEEN ORDER (the ``releases.created_at`` recorded the first
+    time each version was seen), NOT semver parsing: version strings are freeform
+    and self-hosters may use commit hashes, dates, or anything else. The three
+    DECIDED rules (W5-02):
+
+    * (a) NO fix release recorded (a legacy resolve, or a resolve made before any
+      release existed) -> regress on ANY event, keeping the pre-release-tracking
+      behaviour so nothing silently stops regressing.
+    * (b) the event carries NO release (an unknown build) -> regress. FLAGGED BY
+      DESIGN: the safest default is to treat an untagged build as capable of
+      reintroducing the error rather than to silently swallow it; the cost is a
+      possible false regression from a build that predates the fix but shipped
+      without a release tag.
+    * (c) otherwise compare first-seen order: regress ONLY IF the event's release
+      is STRICTLY NEWER than the fix release. Same or older builds are late
+      stragglers -> do NOT regress (the caller still increments counts).
+
+    Defensive: if either release row is missing its ``created_at`` (the version
+    string is set but no ``releases`` row exists to order it) the order is
+    unknowable, so the safe default again regresses (FLAGGED).
+    """
+    if not resolved_in_release:
+        return True  # (a) unknown fix release -> any event regresses.
+    if not event_release:
+        return True  # (b) untagged build -> safest is to regress.
+    # (c) first-seen order via releases.created_at (strictly newer regresses).
+    if event_release_created_at is None or resolved_release_created_at is None:
+        return True  # unorderable -> safe default.
+    return event_release_created_at > resolved_release_created_at
+
+
 # ==============================================================================
 # The upsert. Shipped exactly as below.
 # ==============================================================================
@@ -311,6 +356,15 @@ def _coerce_timestamp(value: str) -> datetime.datetime:
 # Issue to regressed on THIS event" from "an already-regressed Issue got another
 # event". ``(xmax = 0)`` is the standard flag for a freshly INSERTed (vs
 # UPDATEd) row. ``first_seen`` is set only on INSERT (never in DO UPDATE).
+#
+# RELEASE-AWARE REGRESSION (W5-02): the resolved->regressed flip is now gated by
+# a caller-computed boolean ``:should_regress`` (see :func:`decide_regression`),
+# decided from the fix release and the event release read in the SAME transaction
+# BEFORE this upsert. The upsert stays ONE atomic statement; the CASE only flips
+# a RESOLVED Issue when ``:should_regress`` is true, and records the came-back-in
+# release (``:event_release``, NULL for an untagged build) in
+# ``regressed_in_release`` on that same transition. Same/older-build events leave
+# the Issue ``resolved`` (still counted). ``ignored`` stays ``ignored``.
 _UPSERT_ISSUE_SQL = text(
     """
     WITH prior AS (
@@ -332,9 +386,15 @@ _UPSERT_ISSUE_SQL = text(
             event_count = issues.event_count + 1,
             level = excluded.level,
             status = CASE
-                WHEN issues.status = 'resolved' THEN 'regressed'
+                WHEN issues.status = 'resolved' AND :should_regress
+                    THEN 'regressed'
                 WHEN issues.status = 'ignored' THEN issues.status
                 ELSE issues.status
+            END,
+            regressed_in_release = CASE
+                WHEN issues.status = 'resolved' AND :should_regress
+                    THEN :event_release
+                ELSE issues.regressed_in_release
             END
         RETURNING id, status, event_count, (xmax = 0) AS inserted
     )
@@ -347,6 +407,37 @@ _UPSERT_ISSUE_SQL = text(
     FROM upserted
     LEFT JOIN prior ON prior.id = upserted.id
     """
+)
+
+# Record a first-seen release in the SAME transaction as the event. Idempotent
+# via the (project_id, version) unique constraint: a repeat release is a no-op,
+# so ``releases.created_at`` preserves the FIRST time each version was seen --
+# exactly the first-seen order :func:`decide_regression` compares.
+_UPSERT_RELEASE_SQL = text(
+    """
+    INSERT INTO releases (org_id, project_id, version)
+    VALUES (:org_id, :project_id, :version)
+    ON CONFLICT (project_id, version) DO NOTHING
+    """
+)
+
+# Pre-read the Issue's current status + fix release, used to decide regression
+# before the upsert. Reads the row as it stands at the start of this
+# transaction; the atomic upsert re-checks ``issues.status`` under the row lock,
+# so a concurrent status change cannot make an unresolved Issue wrongly regress.
+_PRIOR_ISSUE_SQL = text(
+    """
+    SELECT status, resolved_in_release
+    FROM issues
+    WHERE project_id = :project_id AND fingerprint = :fingerprint
+    """
+)
+
+# First-seen timestamp of a specific release version for this project (NULL if no
+# such release row exists).
+_RELEASE_CREATED_AT_SQL = text(
+    "SELECT created_at FROM releases "
+    "WHERE project_id = :project_id AND version = :version"
 )
 
 _INSERT_EVENT_SQL = text(
@@ -387,9 +478,11 @@ async def process_event(
     RLS-enforcing role), mirroring ``app/jobs/retention.py``; arq calls this with
     only ``ctx`` + the keyword contract, so production uses the default factory.
 
-    Returns a dict signal (consumed by a later alerts slice): ``issue_id``,
+    Returns a dict signal (consumed by the alerts dispatch): ``issue_id``,
     ``created`` (new Issue), ``regressed`` (a resolved Issue flipped on THIS
-    event), ``status`` (post-upsert), ``event_count``, and ``event_id``.
+    event), ``regressed_in_release`` (the came-back-in release when regressed, or
+    NULL for an untagged build / no regression), ``status`` (post-upsert),
+    ``event_count``, and ``event_id``.
     """
     # POISON GUARD: normalization + fingerprinting are pure/CPU and must never
     # retry-loop on an unparseable-but-validated envelope. DB errors below are
@@ -429,7 +522,53 @@ async def process_event(
             )
             return {"status": "duplicate", "event_id": event_id, "issue_id": None}
 
-        # 2. UPSERT the Issue (atomic with the event insert below).
+        # 2. RECORD the release (first-seen order) in the SAME transaction, so
+        # decide_regression can order it against the fix release below.
+        if isinstance(release, str) and release:
+            await session.execute(
+                _UPSERT_RELEASE_SQL,
+                {"org_id": org_id, "project_id": project_id, "version": release},
+            )
+
+        # 3. Pre-read the Issue's current status + fix release and load the two
+        # release timestamps, all inside this transaction, to decide whether a
+        # resolved Issue should regress on THIS event (release-aware).
+        prior = (
+            await session.execute(
+                _PRIOR_ISSUE_SQL,
+                {"project_id": project_id, "fingerprint": fingerprint},
+            )
+        ).one_or_none()
+        resolved_in_release = prior.resolved_in_release if prior is not None else None
+
+        event_release_created_at = None
+        if isinstance(release, str) and release:
+            event_release_created_at = (
+                await session.execute(
+                    _RELEASE_CREATED_AT_SQL,
+                    {"project_id": project_id, "version": release},
+                )
+            ).scalar_one_or_none()
+        resolved_release_created_at = None
+        if resolved_in_release:
+            resolved_release_created_at = (
+                await session.execute(
+                    _RELEASE_CREATED_AT_SQL,
+                    {"project_id": project_id, "version": resolved_in_release},
+                )
+            ).scalar_one_or_none()
+
+        event_release = release if isinstance(release, str) and release else None
+        should_regress = decide_regression(
+            resolved_in_release,
+            event_release,
+            event_release_created_at,
+            resolved_release_created_at,
+        )
+
+        # 4. UPSERT the Issue (atomic with the event insert below). The
+        # resolved->regressed flip is gated by should_regress; the CASE re-checks
+        # issues.status under the row lock so only a truly-resolved Issue flips.
         row = (
             await session.execute(
                 _UPSERT_ISSUE_SQL,
@@ -440,6 +579,8 @@ async def process_event(
                     "title": title,
                     "level": level,
                     "seen_at": seen_at,
+                    "should_regress": should_regress,
+                    "event_release": event_release,
                 },
             )
         ).one()
@@ -451,7 +592,7 @@ async def process_event(
             and row.status == "regressed"
         )
 
-        # 3. INSERT the event row in the SAME transaction.
+        # 5. INSERT the event row in the SAME transaction.
         await session.execute(
             _INSERT_EVENT_SQL,
             {
@@ -502,6 +643,9 @@ async def process_event(
                     kind="regression" if regressed else "new",
                     title=title,
                     level=level,
+                    # The came-back-in release, known only on a regression (NULL
+                    # for an untagged build); ignored for a "new" alert.
+                    release=event_release if regressed else None,
                 )
             except Exception:  # noqa: BLE001 - a dispatch enqueue blip must not fail a stored event
                 logger.warning(
@@ -515,5 +659,6 @@ async def process_event(
         "issue_id": str(issue_id),
         "created": created,
         "regressed": regressed,
+        "regressed_in_release": event_release if regressed else None,
         "event_count": row.event_count,
     }

@@ -22,6 +22,7 @@ import pytest_asyncio
 from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app import issues
 from app.config import get_settings
 from app.db import tenant_session
 from app.jobs.process_event import compute_fingerprint, normalize_envelope, process_event
@@ -360,3 +361,308 @@ async def test_cross_org_event_isolation(app_sessionmaker, two_orgs) -> None:
             )
         ).scalar_one()
         assert seen_event_a == 1
+
+
+# ==============================================================================
+# W5-02: release tracking + release-aware regression.
+# ==============================================================================
+
+
+class _RecordingPool:
+    """Fake arq redis pool: records enqueue_job calls so the regression alert
+    signal (kind + release) can be asserted without a real Redis."""
+
+    def __init__(self) -> None:
+        self.jobs: list[tuple[str, dict]] = []
+
+    async def enqueue_job(self, name: str, **kwargs) -> None:
+        self.jobs.append((name, kwargs))
+
+
+def _envelope_with_release(event_id: str, release: str | None) -> dict:
+    """A stable exception envelope with the release overridden (or removed)."""
+    env = _exc_envelope(event_id)
+    if release is None:
+        env.pop("release", None)
+    else:
+        env["release"] = release
+    return env
+
+
+async def _process(app_sessionmaker, org_id, project_id, envelope, ctx=None) -> dict:
+    return await process_event(
+        ctx if ctx is not None else {},
+        envelope=envelope,
+        org_id=str(org_id),
+        project_id=str(project_id),
+        dsn_key_id=str(uuid.uuid4()),
+        received_at=_now_iso(),
+        session_factory=app_sessionmaker,
+    )
+
+
+async def _release_row_created_at(app_sessionmaker, org_id, project_id, version):
+    async with tenant_session(str(org_id), session_factory=app_sessionmaker) as session:
+        return (
+            await session.execute(
+                text(
+                    "SELECT created_at FROM releases "
+                    "WHERE project_id = :p AND version = :v"
+                ),
+                {"p": project_id, "v": version},
+            )
+        ).scalar_one_or_none()
+
+
+async def _issue_release_fields(app_sessionmaker, org_id, project_id, fingerprint):
+    async with tenant_session(str(org_id), session_factory=app_sessionmaker) as session:
+        return (
+            await session.execute(
+                text(
+                    "SELECT status, resolved_in_release, regressed_in_release "
+                    "FROM issues WHERE project_id = :p AND fingerprint = :f"
+                ),
+                {"p": project_id, "f": fingerprint},
+            )
+        ).one()
+
+
+async def test_release_upsert_dedupes(app_sessionmaker, two_orgs) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    # Two distinct events carrying the SAME release string.
+    for _ in range(2):
+        await _process(
+            app_sessionmaker, org_a, project_a,
+            _envelope_with_release(str(uuid.uuid4()), "web@1.0.0"),
+        )
+    async with tenant_session(str(org_a), session_factory=app_sessionmaker) as session:
+        count = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM releases "
+                    "WHERE project_id = :p AND version = :v"
+                ),
+                {"p": project_a, "v": "web@1.0.0"},
+            )
+        ).scalar_one()
+    assert count == 1  # ON CONFLICT DO NOTHING deduped the second insert.
+
+
+async def test_resolve_captures_latest_release(
+    app_sessionmaker, superuser_engine, two_orgs
+) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    res = await _process(
+        app_sessionmaker, org_a, project_a,
+        _envelope_with_release(str(uuid.uuid4()), "web@1.0.0"),
+    )
+    issue_id = uuid.UUID(res["issue_id"])
+    # Seed a strictly-newer release so "latest" is unambiguous (deterministic
+    # created_at rather than relying on wall-clock spacing between transactions).
+    async with superuser_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO releases (org_id, project_id, version, created_at) "
+                "VALUES (:o, :p, :v, now() + interval '1 hour')"
+            ),
+            {"o": org_a, "p": project_a, "v": "web@2.0.0"},
+        )
+    resolved = await issues.set_issue_status(
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+    )
+    assert resolved is not None
+    assert resolved["status"] == "resolved"
+    assert resolved["resolved_in_release"] == "web@2.0.0"
+
+
+async def test_resolve_with_no_releases_records_null(
+    app_sessionmaker, superuser_engine, two_orgs
+) -> None:
+    # A project with releases but an issue seeded from a no-release event: resolve
+    # still records the project's latest release. Here the project has NONE, so
+    # resolved_in_release is NULL.
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    res = await _process(
+        app_sessionmaker, org_a, project_a,
+        _envelope_with_release(str(uuid.uuid4()), None),
+    )
+    issue_id = uuid.UUID(res["issue_id"])
+    resolved = await issues.set_issue_status(
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+    )
+    assert resolved is not None
+    assert resolved["resolved_in_release"] is None
+
+
+async def test_same_release_event_does_not_regress(
+    app_sessionmaker, two_orgs
+) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    env1 = _envelope_with_release(str(uuid.uuid4()), "web@1.0.0")
+    fingerprint = compute_fingerprint(normalize_envelope(env1))
+    res = await _process(app_sessionmaker, org_a, project_a, env1)
+    issue_id = uuid.UUID(res["issue_id"])
+    # Resolve: captures web@1.0.0 (the only release) as the fix release.
+    resolved = await issues.set_issue_status(
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+    )
+    assert resolved is not None and resolved["resolved_in_release"] == "web@1.0.0"
+
+    # A new event on the SAME release must NOT regress (still counts).
+    result = await _process(
+        app_sessionmaker, org_a, project_a,
+        _envelope_with_release(str(uuid.uuid4()), "web@1.0.0"),
+    )
+    assert result["regressed"] is False
+    assert result["status"] == "resolved"
+    row = await _issue_release_fields(app_sessionmaker, org_a, project_a, fingerprint)
+    assert row.status == "resolved"
+    assert row.regressed_in_release is None
+
+
+async def test_newer_release_regresses_records_and_signals(
+    app_sessionmaker, superuser_engine, two_orgs
+) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    env1 = _envelope_with_release(str(uuid.uuid4()), "web@1.0.0")
+    fingerprint = compute_fingerprint(normalize_envelope(env1))
+    res = await _process(app_sessionmaker, org_a, project_a, env1)
+    issue_id = uuid.UUID(res["issue_id"])
+    resolved = await issues.set_issue_status(
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+    )
+    assert resolved is not None and resolved["resolved_in_release"] == "web@1.0.0"
+
+    # Seed a strictly-newer release AFTER the resolve (so the fix stays 1.0.0).
+    async with superuser_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO releases (org_id, project_id, version, created_at) "
+                "VALUES (:o, :p, :v, now() + interval '1 hour')"
+            ),
+            {"o": org_a, "p": project_a, "v": "web@2.0.0"},
+        )
+
+    # An event from the NEWER release regresses and records the came-back release,
+    # and dispatches a regression alert signal (kind + release) via the pool.
+    pool = _RecordingPool()
+    result = await _process(
+        app_sessionmaker, org_a, project_a,
+        _envelope_with_release(str(uuid.uuid4()), "web@2.0.0"),
+        ctx={"redis": pool},
+    )
+    assert result["regressed"] is True
+    assert result["status"] == "regressed"
+    assert result["regressed_in_release"] == "web@2.0.0"
+
+    row = await _issue_release_fields(app_sessionmaker, org_a, project_a, fingerprint)
+    assert row.status == "regressed"
+    assert row.regressed_in_release == "web@2.0.0"
+    # The fix release is untouched by the regression.
+    assert row.resolved_in_release == "web@1.0.0"
+
+    assert len(pool.jobs) == 1
+    name, kwargs = pool.jobs[0]
+    assert name == "dispatch_alerts"
+    assert kwargs["kind"] == "regression"
+    assert kwargs["release"] == "web@2.0.0"
+
+
+async def test_no_release_event_regresses_rule_b(
+    app_sessionmaker, two_orgs
+) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    env1 = _envelope_with_release(str(uuid.uuid4()), "web@1.0.0")
+    fingerprint = compute_fingerprint(normalize_envelope(env1))
+    res = await _process(app_sessionmaker, org_a, project_a, env1)
+    issue_id = uuid.UUID(res["issue_id"])
+    resolved = await issues.set_issue_status(
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+    )
+    assert resolved is not None and resolved["resolved_in_release"] == "web@1.0.0"
+
+    # An event with NO release regresses (rule b), recording NULL as the release.
+    result = await _process(
+        app_sessionmaker, org_a, project_a,
+        _envelope_with_release(str(uuid.uuid4()), None),
+    )
+    assert result["regressed"] is True
+    assert result["status"] == "regressed"
+    assert result["regressed_in_release"] is None
+    row = await _issue_release_fields(app_sessionmaker, org_a, project_a, fingerprint)
+    assert row.status == "regressed"
+    assert row.regressed_in_release is None
+
+
+async def test_reopen_clears_both_release_fields(
+    app_sessionmaker, superuser_engine, two_orgs
+) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    env1 = _envelope_with_release(str(uuid.uuid4()), "web@1.0.0")
+    fingerprint = compute_fingerprint(normalize_envelope(env1))
+    res = await _process(app_sessionmaker, org_a, project_a, env1)
+    issue_id = uuid.UUID(res["issue_id"])
+    await issues.set_issue_status(
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+    )
+    async with superuser_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO releases (org_id, project_id, version, created_at) "
+                "VALUES (:o, :p, :v, now() + interval '1 hour')"
+            ),
+            {"o": org_a, "p": project_a, "v": "web@2.0.0"},
+        )
+    # Drive it into a regressed state with both release fields set.
+    await _process(
+        app_sessionmaker, org_a, project_a,
+        _envelope_with_release(str(uuid.uuid4()), "web@2.0.0"),
+    )
+    before = await _issue_release_fields(app_sessionmaker, org_a, project_a, fingerprint)
+    assert before.status == "regressed"
+    assert before.resolved_in_release == "web@1.0.0"
+    assert before.regressed_in_release == "web@2.0.0"
+
+    # Reopen clears BOTH release fields and restores unresolved.
+    reopened = await issues.set_issue_status(
+        org_a, project_a, issue_id, "reopen", session_factory=app_sessionmaker
+    )
+    assert reopened is not None
+    assert reopened["status"] == "unresolved"
+    assert reopened["resolved_in_release"] is None
+    assert reopened["regressed_in_release"] is None
+
+
+async def test_ignore_clears_regressed_release_keeps_fix(
+    app_sessionmaker, superuser_engine, two_orgs
+) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    env1 = _envelope_with_release(str(uuid.uuid4()), "web@1.0.0")
+    fingerprint = compute_fingerprint(normalize_envelope(env1))
+    res = await _process(app_sessionmaker, org_a, project_a, env1)
+    issue_id = uuid.UUID(res["issue_id"])
+    await issues.set_issue_status(
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+    )
+    async with superuser_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO releases (org_id, project_id, version, created_at) "
+                "VALUES (:o, :p, :v, now() + interval '1 hour')"
+            ),
+            {"o": org_a, "p": project_a, "v": "web@2.0.0"},
+        )
+    await _process(
+        app_sessionmaker, org_a, project_a,
+        _envelope_with_release(str(uuid.uuid4()), "web@2.0.0"),
+    )
+    # Ignore clears the came-back release but keeps the recorded fix release.
+    ignored = await issues.set_issue_status(
+        org_a, project_a, issue_id, "ignore", session_factory=app_sessionmaker
+    )
+    assert ignored is not None
+    assert ignored["status"] == "ignored"
+    assert ignored["regressed_in_release"] is None
+    assert ignored["resolved_in_release"] == "web@1.0.0"
+    row = await _issue_release_fields(app_sessionmaker, org_a, project_a, fingerprint)
+    assert row.regressed_in_release is None

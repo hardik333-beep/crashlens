@@ -186,6 +186,21 @@ export function IssueDetailPage() {
           &middot; first seen {formatRelative(detail.first_seen)} &middot; last
           seen {formatRelative(detail.last_seen)}
         </p>
+        {(detail.regressed_in_release ||
+          (detail.status === "resolved" && detail.resolved_in_release)) && (
+          <div className="row detail-badges release-badges">
+            {detail.status === "resolved" && detail.resolved_in_release && (
+              <span className="release-badge release-fixed">
+                Fixed in {detail.resolved_in_release}
+              </span>
+            )}
+            {detail.regressed_in_release && (
+              <span className="release-badge release-regressed">
+                Came back in {detail.regressed_in_release}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="row detail-actions">

@@ -52,6 +52,33 @@ def test_alert_body_regression_wording() -> None:
     assert "again" in body.lower()
 
 
+def test_alert_body_regression_names_release_when_known() -> None:
+    body = dispatch.alert_body(
+        "regression", "Payments", "T", "error", "/x", "web@2.0.0"
+    )
+    assert "came back in web@2.0.0" in body.lower()
+    assert "again" in body.lower()  # existing wording preserved
+    assert "Release: web@2.0.0" in body
+
+
+def test_alert_body_new_ignores_release() -> None:
+    # A release passed on a "new" alert never leaks into the body.
+    body = dispatch.alert_body("new", "Payments", "T", "error", "/x", "web@2.0.0")
+    assert "web@2.0.0" not in body
+    assert "new error" in body.lower()
+
+
+def test_webhook_payload_includes_release_only_when_provided() -> None:
+    with_release = dispatch.webhook_payload(
+        "regression", "p", "i", "T", "error", "2026-07-04T00:00:00+00:00", "web@2.0.0"
+    )
+    assert with_release["release"] == "web@2.0.0"
+    without = dispatch.webhook_payload(
+        "new", "p", "i", "T", "error", "2026-07-04T00:00:00+00:00"
+    )
+    assert "release" not in without
+
+
 def test_webhook_payload_shape() -> None:
     payload = dispatch.webhook_payload(
         "new", "proj1", "issue1", "T", "error", "2026-07-04T00:00:00+00:00"

@@ -230,6 +230,10 @@ class Issue(Base):
         _UUID_PK, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     resolved_in_release: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    # The release an Issue came back in when a resolved Issue regressed (revision
+    # 0006). NULL until a resolved->regressed transition records it; cleared on
+    # reopen/ignore. Companion to resolved_in_release for release-aware regression.
+    regressed_in_release: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
 
     __table_args__ = (
         sa.CheckConstraint(

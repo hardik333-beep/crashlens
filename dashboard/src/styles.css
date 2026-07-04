@@ -483,6 +483,34 @@ select:focus {
   border-color: var(--border);
 }
 
+/* --- Release badges (fixed in / came back in) ----------------------------- */
+.release-badges {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.release-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 2px 10px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.release-fixed {
+  background: #e6f2f1;
+  color: var(--accent-hover);
+  border-color: #bfe0dc;
+}
+
+.release-regressed {
+  background: #fbf1d9;
+  color: #8a5a00;
+  border-color: #eed9a6;
+}
+
 /* --- Issue detail --------------------------------------------------------- */
 .detail-header {
   display: flex;
