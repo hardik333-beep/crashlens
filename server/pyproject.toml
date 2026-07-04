@@ -44,3 +44,6 @@ known-first-party = ["app"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "db: integration test requiring a live PostgreSQL (skips if unreachable)",
+]
