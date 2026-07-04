@@ -1,0 +1,43 @@
+{
+  "name": "@crashlens/browser",
+  "version": "0.1.0",
+  "description": "Tiny zero-dependency browser JavaScript SDK for Crashlens self-hosted error monitoring.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/crashlens.esm.js",
+  "module": "./dist/crashlens.esm.js",
+  "types": "./dist/index.d.ts",
+  "unpkg": "./dist/crashlens.iife.js",
+  "jsdelivr": "./dist/crashlens.iife.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/crashlens.esm.js",
+      "default": "./dist/crashlens.esm.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.mjs && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "crashlens",
+    "error-monitoring",
+    "error-tracking",
+    "browser",
+    "sdk"
+  ],
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "jsdom": "^25.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
