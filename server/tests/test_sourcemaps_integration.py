@@ -29,6 +29,7 @@ from app import security, sourcemaps
 from app.config import get_settings
 from app.jobs.process_event import compute_fingerprint, normalize_envelope, process_event
 from app.main import create_app
+from tests.conftest import superuser_database_url
 
 pytestmark = pytest.mark.db
 
@@ -43,7 +44,7 @@ _FIXTURE_MAP = os.path.join(
 
 @pytest_asyncio.fixture(scope="module")
 async def superuser_engine():
-    engine = create_async_engine(get_settings().database_url)
+    engine = create_async_engine(superuser_database_url())
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -68,7 +69,7 @@ async def app_sessionmaker(superuser_engine):
         )
         await conn.execute(text("GRANT crashlens_app TO crashlens_test"))
         await conn.execute(text("GRANT crashlens_system TO crashlens_test"))
-    url = make_url(get_settings().database_url).set(
+    url = make_url(superuser_database_url()).set(
         username=_TEST_ROLE, password=_TEST_PASSWORD
     )
     engine = create_async_engine(url)

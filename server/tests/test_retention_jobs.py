@@ -15,7 +15,6 @@ import pytest_asyncio
 from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.config import get_settings
 from app.db import tenant_session
 from app.jobs.retention import (
     DEFAULT_RETENTION_DAYS_FALLBACK,
@@ -29,6 +28,7 @@ from app.jobs.retention import (
     partitions_older_than,
     projects_needing_trim,
 )
+from tests.conftest import superuser_database_url
 
 _TEST_ROLE = "crashlens_test"
 _TEST_PASSWORD = "crashlens_test"
@@ -101,7 +101,7 @@ def test_projects_needing_trim_empty_when_all_at_ceiling() -> None:
 @pytest_asyncio.fixture(scope="module")
 async def superuser_engine():
     """Engine using the migration/superuser DATABASE_URL. Skips if unreachable."""
-    engine = create_async_engine(get_settings().database_url)
+    engine = create_async_engine(superuser_database_url())
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -134,7 +134,7 @@ async def app_sessionmaker(superuser_engine):
         await conn.execute(text("GRANT crashlens_app TO crashlens_test"))
         await conn.execute(text("GRANT crashlens_system TO crashlens_test"))
 
-    url = make_url(get_settings().database_url).set(
+    url = make_url(superuser_database_url()).set(
         username=_TEST_ROLE, password=_TEST_PASSWORD
     )
     engine = create_async_engine(url)

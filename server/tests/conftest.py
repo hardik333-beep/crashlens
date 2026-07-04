@@ -23,6 +23,24 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("SECRET_KEY", "test-secret-not-a-real-key")
 os.environ.setdefault("ENVIRONMENT", "test")
 
+from app.config import get_settings  # noqa: E402  (after env defaults are set)
+
+
+def superuser_database_url() -> str:
+    """Return the migration/superuser DATABASE_URL for setup/teardown fixtures.
+
+    Integration fixtures need a SUPERUSER connection to create the throwaway
+    ``crashlens_test`` login role, seed rows with RLS bypassed, and clean up.
+
+    In CI the application under test now connects as the NON-superuser
+    ``crashlens_login`` role (``DATABASE_URL``) so the HTTP path exercises RLS
+    for real, while these setup/teardown fixtures use ``SUPERUSER_DATABASE_URL``.
+    Locally that env var is unset and ``DATABASE_URL`` still points at the
+    superuser, so this falls back to it: local behaviour (skip cleanly when no
+    database is reachable) is unchanged.
+    """
+    return os.environ.get("SUPERUSER_DATABASE_URL") or get_settings().database_url
+
 
 async def ensure_events_partitions(engine_or_session, days: list[datetime.date]) -> None:
     """Ensure the daily ``events`` partitions for ``days`` exist (test provisioning).

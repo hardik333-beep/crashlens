@@ -102,10 +102,36 @@ jobs:
           SECRET_KEY: ci-test-secret-not-a-real-key
         run: alembic upgrade head
 
+      # Create the NON-superuser runtime login role, mirroring
+      # deploy/postgres-init/01-app-user.sh. The migrations above already created
+      # the NOLOGIN privilege roles (crashlens_app/system in 0001, admin in 0007);
+      # this only adds the login role and its membership. The application under
+      # test then connects as this role (DATABASE_URL below), so the HTTP path is
+      # RLS-bound exactly like production instead of running as the RLS-bypassing
+      # superuser. Fixtures keep the superuser connection via SUPERUSER_DATABASE_URL.
+      - name: Create non-superuser app login role
+        env:
+          PGPASSWORD: crashlens
+        run: |
+          psql -v ON_ERROR_STOP=1 -h localhost -U crashlens -d crashlens <<'SQL'
+          DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'crashlens_login') THEN
+              CREATE ROLE crashlens_login LOGIN NOSUPERUSER INHERIT PASSWORD 'crashlens_login';
+            END IF;
+          END $$;
+          GRANT crashlens_app TO crashlens_login;
+          GRANT crashlens_system TO crashlens_login;
+          GRANT crashlens_admin TO crashlens_login;
+          SQL
+
       - name: Run tests
         working-directory: server
         env:
-          DATABASE_URL: postgresql+asyncpg://crashlens:crashlens@localhost:5432/crashlens
+          # The app under test connects as the non-superuser login role so RLS is
+          # exercised for real on the HTTP path; setup/teardown fixtures use the
+          # superuser URL for role creation, seeding, and cleanup.
+          DATABASE_URL: postgresql+asyncpg://crashlens_login:crashlens_login@localhost:5432/crashlens
+          SUPERUSER_DATABASE_URL: postgresql+asyncpg://crashlens:crashlens@localhost:5432/crashlens
           REDIS_URL: redis://localhost:6379/0
           SECRET_KEY: ci-test-secret-not-a-real-key
         run: pytest -q -m "db or not db"
@@ -209,10 +235,29 @@ jobs:
           SECRET_KEY: ci-test-secret-not-a-real-key
         run: alembic upgrade head
 
+      # Same non-superuser login role as the test job (see its comment): the
+      # isolation gate MUST run the app against an RLS-bound role, otherwise a
+      # superuser connection would bypass RLS and the gate would pass vacuously.
+      - name: Create non-superuser app login role
+        env:
+          PGPASSWORD: crashlens
+        run: |
+          psql -v ON_ERROR_STOP=1 -h localhost -U crashlens -d crashlens <<'SQL'
+          DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'crashlens_login') THEN
+              CREATE ROLE crashlens_login LOGIN NOSUPERUSER INHERIT PASSWORD 'crashlens_login';
+            END IF;
+          END $$;
+          GRANT crashlens_app TO crashlens_login;
+          GRANT crashlens_system TO crashlens_login;
+          GRANT crashlens_admin TO crashlens_login;
+          SQL
+
       - name: Run cross-tenant isolation tests
         working-directory: server
         env:
-          DATABASE_URL: postgresql+asyncpg://crashlens:crashlens@localhost:5432/crashlens
+          DATABASE_URL: postgresql+asyncpg://crashlens_login:crashlens_login@localhost:5432/crashlens
+          SUPERUSER_DATABASE_URL: postgresql+asyncpg://crashlens:crashlens@localhost:5432/crashlens
           REDIS_URL: redis://localhost:6379/0
           SECRET_KEY: ci-test-secret-not-a-real-key
         run: pytest -q -m isolation

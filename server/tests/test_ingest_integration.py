@@ -36,6 +36,7 @@ from app import ratelimit, security
 from app.config import get_settings
 from app.main import create_app
 from app.routes.ingest import PROCESS_EVENT_JOB
+from tests.conftest import superuser_database_url
 
 pytestmark = pytest.mark.db
 
@@ -44,7 +45,7 @@ pytestmark = pytest.mark.db
 @pytest_asyncio.fixture
 async def superuser_engine():
     """Engine on the migration/superuser DATABASE_URL. Skips if unreachable."""
-    engine = create_async_engine(get_settings().database_url)
+    engine = create_async_engine(superuser_database_url())
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))

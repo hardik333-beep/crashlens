@@ -21,8 +21,8 @@ from sqlalchemy import make_url, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.config import get_settings
 from app.db import system_session, tenant_session
+from tests.conftest import superuser_database_url
 
 pytestmark = pytest.mark.db
 
@@ -33,7 +33,7 @@ _TEST_PASSWORD = "crashlens_test"
 @pytest_asyncio.fixture(scope="module")
 async def superuser_engine():
     """Engine using the migration/superuser DATABASE_URL. Skips if unreachable."""
-    engine = create_async_engine(get_settings().database_url)
+    engine = create_async_engine(superuser_database_url())
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -62,7 +62,7 @@ async def app_sessionmaker(superuser_engine):
         # crashlens_system inside system_session.
         await conn.execute(text("GRANT crashlens_system TO crashlens_test"))
 
-    url = make_url(get_settings().database_url).set(
+    url = make_url(superuser_database_url()).set(
         username=_TEST_ROLE, password=_TEST_PASSWORD
     )
     engine = create_async_engine(url)
