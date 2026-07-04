@@ -1,10 +1,11 @@
-# Crashlens ingest protocol - v1 event envelope (DRAFT)
+# Crashlens ingest protocol - v1 event envelope
 
-Status: DRAFT. This is a proposal for a governor to review before any SDK is
-built. Nothing here is final. Every unresolved point is marked with `OPEN:`.
+Status: v1 - FROZEN for v1 SDK development, 2026-07-04.
 
 This document specifies the JSON payload that Crashlens SDKs send to a Crashlens
-instance, and the HTTP contract of the ingest endpoint.
+instance, and the HTTP contract of the ingest endpoint. All questions raised in
+the draft have been resolved; the rulings are recorded inline as normative text
+and summarised in section 5.
 
 ## 1. Transport
 
@@ -18,9 +19,10 @@ instance, and the HTTP contract of the ingest endpoint.
   - The `{project_id}` in the path and the project bound to the key must match,
     or the request is rejected.
 - Content type: `application/json; charset=utf-8`.
-- Body encoding: UTF-8 JSON. `OPEN:` do we also accept gzip-compressed bodies
-  (`Content-Encoding: gzip`) at v1, given the edge body cap is measured on the
-  compressed bytes?
+- Body encoding: UTF-8 JSON. Clients MAY send gzip-compressed bodies with
+  `Content-Encoding: gzip`. The edge body cap applies to the compressed bytes.
+  The application additionally enforces a 1 MB decompressed-size cap and
+  returns `413` above it, as a decompression bomb guard.
 - Body size: capped at the edge (about 250 KB). Oversized requests get `413`.
 
 ## 2. Response semantics
@@ -29,20 +31,20 @@ The ingest endpoint never does grouping or storage inline; it authenticates,
 validates shape, enqueues, and returns quickly.
 
 - `202 Accepted` - the event passed authentication and basic shape validation
-  and has been accepted for asynchronous processing. The body is a small JSON
-  acknowledgement. Acceptance does not guarantee the event survives later
-  processing (for example it may be dropped by sampling).
+  and has been accepted for asynchronous processing. Acceptance does not
+  guarantee the event survives later processing (for example it may be dropped
+  by sampling).
 - `400 Bad Request` - the JSON is malformed or a required field is missing or
   the wrong type.
 - `401 Unauthorized` - the `X-Crashlens-Key` header is missing or invalid.
 - `403 Forbidden` - the key is valid but not permitted for the `{project_id}`
   in the path.
-- `413 Payload Too Large` - the request body exceeds the configured cap.
+- `413 Payload Too Large` - the request body exceeds the configured cap
+  (compressed at the edge, or 1 MB decompressed in the application).
 - `429 Too Many Requests` - the per-DSN rate limit has been exceeded. Includes a
   `Retry-After` header (seconds). Clients should back off and may drop events.
-- `202` acknowledgement body shape: `{ "id": "<event_id echoed>" }`.
-  `OPEN:` should the acknowledgement echo the event id, return a server-assigned
-  id, or return an empty body for minimum overhead?
+- `202` acknowledgement body shape: `{ "id": "<event_id echoed>" }`. The server
+  always echoes the client-supplied `event_id`.
 
 ## 3. Event envelope
 
@@ -65,7 +67,8 @@ A single event is one JSON object. `?` on a field name marks it as optional.
           "function": "compute_total",
           "lineno": 42,
           "colno": 12,
-          "context_line": "    return subtotal / count"
+          "context_line": "    return subtotal / count",
+          "in_app": true
         }
       ]
     }
@@ -118,22 +121,25 @@ A single event is one JSON object. `?` on a field name marks it as optional.
 | `user` | object | no | `{ "id"?: string }`. |
 | `request` | object | no | `{ "url"?: string, "method"?: string }`. |
 
+Unknown top-level fields are IGNORED by the server (forward compatible).
+
 ### 3.2 Message or exception
 
 At least one of `message` or `exception` must be present. A pure log-style
 event carries `message` and no `exception`; a captured crash carries
-`exception` (and may also carry `message`).
-`OPEN:` confirm this "at least one of" rule, versus always requiring `message`.
+`exception` (and may also carry `message`). An event with neither is rejected
+with `400`.
 
 ### 3.3 Exception object
 
 ```
 exception = {
-  "type":  string,          // required, for example "ZeroDivisionError"
-  "value": string,          // required, the exception message
+  "type":  string,           // required, for example "ZeroDivisionError"
+  "value": string,           // required, the exception message
   "stacktrace": {
     "frames": [ frame, ... ] // required array, may be empty, ordered
-  }
+  },
+  "cause": exception         // optional, recursive "caused by" chain, see below
 }
 
 frame = {
@@ -141,19 +147,22 @@ frame = {
   "function":     string,   // required
   "lineno":       integer,  // required
   "colno":        integer,  // required
-  "context_line": string    // optional, the source line at lineno
+  "context_line": string,   // optional, the source line at lineno
+  "in_app":       boolean,  // optional, default true; marks application code
+                            // vs library code. Grouping quality depends on it.
+  "pre_context":  [string], // optional, source lines before lineno, max 5
+  "post_context": [string]  // optional, source lines after lineno, max 5
 }
 ```
 
-`OPEN:` frame ordering convention - the proposal is oldest call first, crash
-frame last (Python's natural order). Browser and Node stacks are typically the
-reverse; the SDKs must normalise to one server-side convention. Which one is
-canonical?
-`OPEN:` should a frame carry `in_app` (a boolean marking application vs library
-code) and `pre_context` / `post_context` (surrounding source lines) at v1, or
-are these deferred to a later version?
-`OPEN:` do we support chained exceptions (a list of exception objects for
-"caused by" chains) at v1, or only a single exception?
+Frame ordering is canonical across all platforms: oldest call first, crash
+frame last (Python's natural order). SDKs normalise to this order before
+sending; the server never reorders.
+
+Chained exceptions: v1 supports a single `exception` object with an optional
+recursive `cause` field carrying the same exception shape, to a maximum depth
+of 5. Deeper chains are truncated server-side. Fingerprinting uses the root
+cause (the deepest exception in the chain).
 
 ### 3.4 Breadcrumb object
 
@@ -168,33 +177,50 @@ breadcrumb = {
 }
 ```
 
-`OPEN:` maximum number of breadcrumbs accepted per event, and what the server
-does past that limit (truncate oldest vs reject). Proposal: keep the most recent
-100, silently truncating older ones.
+The server keeps the most recent 100 breadcrumbs per event and silently drops
+older ones.
 
 ## 4. Limits and validation
 
-- `OPEN:` maximum length for `message`, `tags` keys and values, and `filename`
-  / `function` strings before server-side truncation.
-- `OPEN:` maximum frame count per stacktrace.
-- `OPEN:` whether unknown top-level fields are ignored (forward-compatible) or
-  rejected. Proposal: ignore unknown fields.
-- `OPEN:` version negotiation - do we send an explicit envelope version (for
-  example a `v` field or an `X-Crashlens-Protocol-Version` header) so the server
-  can evolve the schema, or is the endpoint path the only version signal?
+- String limits, enforced server-side by silent truncation with a trailing
+  `...` marker:
+  - `message`: 8192 characters.
+  - tag keys: 32 characters.
+  - tag values: 200 characters.
+  - `filename` and `function`: 256 characters.
+  - each context line (`context_line` and every entry of `pre_context` /
+    `post_context`): 256 characters.
+- Maximum 128 frames per stacktrace. On overflow the server keeps the LAST 128
+  frames (nearest the crash under the canonical ordering).
+- Unknown top-level fields are ignored (forward compatible).
+- Version negotiation: the path is the only version signal. The current
+  endpoint is implicitly v1; a breaking change ships a new path. Additive
+  evolution relies on unknown fields being ignored.
 
-## 5. Open questions summary
+## 5. Rulings log
 
-Collected here for the governor. Each also appears inline above.
+Resolutions to the draft's open questions, ruled by the governor 2026-07-04.
+Each also appears inline above as normative text.
 
-1. `OPEN:` accept gzip-compressed request bodies at v1?
-2. `OPEN:` `202` acknowledgement body shape (echo id, server id, or empty)?
-3. `OPEN:` confirm the "message or exception, at least one" rule.
-4. `OPEN:` canonical stack frame ordering across platforms.
-5. `OPEN:` include `in_app`, `pre_context`, `post_context` on frames at v1?
-6. `OPEN:` support chained ("caused by") exceptions at v1?
-7. `OPEN:` breadcrumb cap and truncation behaviour (proposed 100, drop oldest).
-8. `OPEN:` string length limits and truncation policy.
-9. `OPEN:` maximum frame count per stacktrace.
-10. `OPEN:` ignore vs reject unknown fields (proposed ignore).
-11. `OPEN:` protocol version negotiation mechanism.
+1. gzip request bodies: ACCEPTED at v1. Edge cap applies to compressed bytes;
+   the application enforces a 1 MB decompressed cap and returns `413` above it.
+2. `202` acknowledgement body: `{ "id": "<event_id echoed>" }`, always echoing
+   the client event_id.
+3. CONFIRMED: at least one of `message` or `exception` must be present.
+4. Canonical frame order: oldest call first, crash frame last. SDKs normalise
+   before sending; the server never reorders.
+5. `in_app` (boolean, optional, default true) is part of v1 frames.
+   `pre_context` / `post_context` are accepted optional arrays, max 5 lines
+   each.
+6. Chained exceptions: single `exception` with an optional recursive `cause`
+   of the same shape, max depth 5; deeper chains truncated server-side.
+   Fingerprinting uses the root cause.
+7. Breadcrumbs: the server keeps the most recent 100 per event and silently
+   drops older ones.
+8. String limits with silent truncation and a trailing `...` marker: `message`
+   8192; tag keys 32; tag values 200; `filename` and `function` 256; each
+   context line 256.
+9. Max 128 frames per stacktrace; on overflow the server keeps the LAST 128.
+10. Unknown top-level fields are IGNORED (forward compatible).
+11. Version negotiation: the path is the only version signal; the current
+    endpoint is implicitly v1, and a breaking change ships a new path.
