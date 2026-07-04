@@ -15,9 +15,14 @@ The handler does the minimum on the hot path and defers everything expensive:
    (gzip decompression up to 1 MB, JSON parse) on an unthrottled path by
    sending deliberately invalid payloads; a 429 is decided before the body is
    even read.
-3. Read the body, decompressing gzip under a HARD incremental 1 MB cap (413).
-4. Parse and shape-validate the envelope (400, generic body).
-5. Enqueue the raw validated envelope plus server-derived routing metadata to
+3. Apply per-project sampling (W6-04), AFTER the rate limit and BEFORE the
+   body is read: if the resolved project's ``sampling_rate`` is below 1.0 and
+   the roll misses, return 202 with a null ``id`` WITHOUT reading the body or
+   enqueueing. Per docs/PROTOCOL.md, a 202 acceptance does not guarantee an
+   event's survival; a sampled-out event is the documented case.
+4. Read the body, decompressing gzip under a HARD incremental 1 MB cap (413).
+5. Parse and shape-validate the envelope (400, generic body).
+6. Enqueue the raw validated envelope plus server-derived routing metadata to
    the arq ``process_event`` job and return 202 immediately.
 
 It performs NO grouping and NO Postgres writes inline, and it NEVER logs the DSN
@@ -28,8 +33,10 @@ and byte sizes.
 import asyncio
 import datetime
 import logging
+import random
 import time
 import uuid
+from collections.abc import Callable
 
 from arq import create_pool
 from arq.connections import ArqRedis, RedisSettings
@@ -42,6 +49,11 @@ from app.ratelimit import check_rate_limit
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["ingest"])
+
+# Injectable sampling coin-flip. Module-level so tests can monkeypatch
+# ``app.routes.ingest.rng`` for a deterministic sequence; production leaves it
+# at the default ``random.random`` (uniform on [0.0, 1.0)).
+rng: Callable[[], float] = random.random
 
 # arq job the async processor will register in a later slice. Enqueuing to a
 # not-yet-registered function name is valid in arq. FLAGGED (governor review):
@@ -95,6 +107,21 @@ def _reject(
     )
 
 
+def _sampled_out(sampling_rate: float) -> bool:
+    """Return True if an event for a project at ``sampling_rate`` should drop.
+
+    A rate of 1.0 (the "keep every event" default) short-circuits to False
+    WITHOUT calling ``rng`` at all, so the common case never rolls the dice.
+    Otherwise the roll drops the event when ``rng() >= sampling_rate``: since
+    ``rng`` is uniform on [0.0, 1.0), P(rng() < sampling_rate) == sampling_rate,
+    so this keeps exactly ``sampling_rate`` of events on average, including the
+    rate == 0.0 boundary (every roll is >= 0.0, so every event drops).
+    """
+    if sampling_rate >= 1.0:
+        return False
+    return rng() >= sampling_rate
+
+
 async def get_ingest_pool(app) -> ArqRedis:  # noqa: ANN001 - FastAPI app object
     """Return the process-wide arq Redis pool, creating it once on first use.
 
@@ -118,6 +145,12 @@ async def get_ingest_pool(app) -> ArqRedis:  # noqa: ANN001 - FastAPI app object
 
 @router.post("/ingest/{project_id}/")
 async def ingest_event(project_id: uuid.UUID, request: Request) -> Response:
+    """Accept an event for ``project_id``, or reject with a generic error body.
+
+    A 202 acceptance does not guarantee an event's survival: a sampled-out
+    event (the project's per-project sampling_rate rolled a drop) is the
+    documented case where the body is never read and nothing is enqueued.
+    """
     # 1. Authenticate the DSN key. Never logged.
     public_key = request.headers.get("x-crashlens-key")
     if not public_key:
@@ -143,7 +176,17 @@ async def ingest_event(project_id: uuid.UUID, request: Request) -> Response:
             headers={"Retry-After": str(decision.retry_after)},
         )
 
-    # 3. Read the body, decompressing gzip under the incremental 1 MB cap.
+    # 3. Apply per-project sampling (AFTER rate limiting, BEFORE the body is
+    # read). A sampled-out event is accepted (202) but never read or enqueued;
+    # docs/PROTOCOL.md: 202 does not guarantee survival, and this is the
+    # documented case.
+    if _sampled_out(record.sampling_rate):
+        _log_decision(project_id, "sampled")
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED, content={"id": None}
+        )
+
+    # 4. Read the body, decompressing gzip under the incremental 1 MB cap.
     body = await request.body()
     wire_size = len(body)
     encoding = request.headers.get("content-encoding", "").lower()
@@ -171,7 +214,7 @@ async def ingest_event(project_id: uuid.UUID, request: Request) -> Response:
             size=wire_size,
         )
 
-    # 4. Parse and shape-validate. Any failure is a generic 400.
+    # 5. Parse and shape-validate. Any failure is a generic 400.
     try:
         envelope = ingest.parse_json(body)
         ingest.validate_envelope(envelope)
@@ -184,7 +227,7 @@ async def ingest_event(project_id: uuid.UUID, request: Request) -> Response:
             project_id, "invalid_envelope", status.HTTP_400_BAD_REQUEST, size=len(body)
         )
 
-    # 5. Enqueue for async processing and return 202 immediately. Server-derived
+    # 6. Enqueue for async processing and return 202 immediately. Server-derived
     # routing metadata is added here; the client can only influence the envelope.
     await pool.enqueue_job(
         PROCESS_EVENT_JOB,

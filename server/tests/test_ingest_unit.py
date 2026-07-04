@@ -17,6 +17,7 @@ import pytest
 
 from app import ingest
 from app.ratelimit import REFILL_PER_SECOND, retry_after_seconds
+from app.routes import ingest as ingest_routes
 
 
 def _valid_envelope() -> dict:
@@ -209,3 +210,61 @@ def test_retry_after_scales_with_slower_refill() -> None:
     assert retry_after_seconds(0.0, refill_per_second=0.5) == 2
     # Sanity: the default refill is one token per second.
     assert REFILL_PER_SECOND == 1.0
+
+
+# --- Per-project sampling (W6-04) -- rng-injected, no db/redis needed ---------
+def test_sampling_rate_one_never_drops(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Even a roll that would drop anything else (0.0 is the worst case for a
+    # ">=" comparison) must not drop when the rate is the "keep every event"
+    # default.
+    monkeypatch.setattr(ingest_routes, "rng", lambda: 0.0)
+    assert ingest_routes._sampled_out(1.0) is False
+
+
+def test_sampling_rate_one_never_calls_rng() -> None:
+    # The rate == 1.0 short-circuit must not roll the dice at all: assert by
+    # making any call to rng raise.
+    def _boom() -> float:
+        raise AssertionError("rng() must not be called when sampling_rate >= 1.0")
+
+    original = ingest_routes.rng
+    ingest_routes.rng = _boom
+    try:
+        assert ingest_routes._sampled_out(1.0) is False
+    finally:
+        ingest_routes.rng = original
+
+
+def test_sampling_rate_zero_always_drops(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Even the best-case roll for survival (rng() == 0.0) still drops when the
+    # rate is 0.0, since 0.0 >= 0.0 is true.
+    monkeypatch.setattr(ingest_routes, "rng", lambda: 0.0)
+    assert ingest_routes._sampled_out(0.0) is True
+
+    monkeypatch.setattr(ingest_routes, "rng", lambda: 0.999999)
+    assert ingest_routes._sampled_out(0.0) is True
+
+
+def test_sampling_boundary_roll_equal_to_rate_drops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # rng() >= sampling_rate is the drop condition, so a roll exactly equal to
+    # the rate drops the event (the boundary belongs to "drop").
+    monkeypatch.setattr(ingest_routes, "rng", lambda: 0.5)
+    assert ingest_routes._sampled_out(0.5) is True
+
+
+def test_sampling_boundary_roll_just_under_rate_keeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ingest_routes, "rng", lambda: 0.499999)
+    assert ingest_routes._sampled_out(0.5) is False
+
+
+def test_sampling_intermediate_rate_respects_rng(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ingest_routes, "rng", lambda: 0.1)
+    assert ingest_routes._sampled_out(0.25) is False
+    monkeypatch.setattr(ingest_routes, "rng", lambda: 0.9)
+    assert ingest_routes._sampled_out(0.25) is True

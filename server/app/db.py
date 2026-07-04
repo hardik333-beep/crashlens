@@ -25,18 +25,24 @@ cross-tenant reads happening BEFORE org context exists:
 2. Invite acceptance: resolving an invite token (``org_invites``; the org is
    unknown until the token row is read).
 3. Org routing: resolving an org slug to an id (``orgs``).
-4. Ingest (the hot path): looking up a DSN ``public_key`` (``dsn_keys``) to
-   learn WHICH project/org an event belongs to.
+4. Ingest (the hot path): looking up a DSN ``public_key`` (``dsn_keys``),
+   JOINed to ``projects`` in the same lookup, to learn WHICH project/org an
+   event belongs to AND its per-project ``sampling_rate`` -- the sampling
+   decision (W6-04) is made before any tenant context exists, so it rides
+   along with this bootstrap read rather than requiring a second,
+   tenant-scoped query.
 
 It opens a transaction and issues ``SET LOCAL ROLE crashlens_system`` as the
 first statement. ``crashlens_system`` is a NOLOGIN role created by migration
-0001 with BYPASSRLS and SELECT-only grants on exactly those four tables.
-BYPASSRLS takes effect because PostgreSQL checks row security against
-``current_user``, and SET ROLE changes ``current_user``. ``SET LOCAL`` reverts
-at COMMIT / ROLLBACK, the same wipe semantics as the GUC, so the bypass is
-opt-in per transaction; a plain session stays fully RLS-bound. The role cannot
-write anything and cannot read any other table, so misuse fails loudly with a
-privilege error. Everything else goes through :func:`tenant_session`.
+0001 (SELECT on ``orgs``, ``org_memberships``, ``org_invites``, ``dsn_keys``)
+and extended by migration 0005 (SELECT on ``projects``), with BYPASSRLS and
+SELECT-only grants on exactly those FIVE tables. BYPASSRLS takes effect
+because PostgreSQL checks row security against ``current_user``, and SET ROLE
+changes ``current_user``. ``SET LOCAL`` reverts at COMMIT / ROLLBACK, the same
+wipe semantics as the GUC, so the bypass is opt-in per transaction; a plain
+session stays fully RLS-bound. The role cannot write anything and cannot read
+any other table, so misuse fails loudly with a privilege error. Everything
+else goes through :func:`tenant_session`.
 
 (The RLS-free ``users`` table needs no bypass: a plain ``crashlens_app``
 session reads it directly, e.g. the user-by-email lookup at login.)

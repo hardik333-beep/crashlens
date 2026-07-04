@@ -89,14 +89,22 @@ async def _seed_org(conn, name: str) -> uuid.UUID:
     return org_id
 
 
-async def _seed_project(conn, org_id: uuid.UUID, name: str) -> uuid.UUID:
+async def _seed_project(
+    conn, org_id: uuid.UUID, name: str, sampling_rate: float = 1.0
+) -> uuid.UUID:
     project_id = uuid.uuid4()
     await conn.execute(
         text(
-            "INSERT INTO projects (id, org_id, name, slug) "
-            "VALUES (:id, :oid, :name, :slug)"
+            "INSERT INTO projects (id, org_id, name, slug, sampling_rate) "
+            "VALUES (:id, :oid, :name, :slug, :rate)"
         ),
-        {"id": project_id, "oid": org_id, "name": name, "slug": f"{name}-{project_id}"},
+        {
+            "id": project_id,
+            "oid": org_id,
+            "name": name,
+            "slug": f"{name}-{project_id}",
+            "rate": sampling_rate,
+        },
     )
     return project_id
 
@@ -373,6 +381,68 @@ async def test_invalid_envelope_still_consumes_a_token(
         tokens = float(tokens_raw)
         # One token spent from a full bucket, allowing a moment of refill.
         assert ratelimit.BUCKET_CAPACITY - 1 <= tokens < ratelimit.BUCKET_CAPACITY
+    finally:
+        async with superuser_engine.begin() as conn:
+            await conn.execute(text("DELETE FROM orgs WHERE id = :id"), {"id": org_id})
+
+
+# --- Per-project sampling (W6-04) ---------------------------------------------
+async def test_sampling_rate_zero_returns_202_null_id_and_nothing_enqueued(
+    superuser_engine, redis_client, client
+) -> None:
+    """A project with sampling_rate 0.0 accepts the request but drops it.
+
+    A sampled-out event still gets 202 (per docs/PROTOCOL.md, acceptance does
+    not guarantee survival), but the ``id`` is null and NOTHING lands on the
+    arq queue: the body is never read, so process_event is never invoked.
+    """
+    async with superuser_engine.begin() as conn:
+        org_id = await _seed_org(conn, "SampleZeroCo")
+        project_id = await _seed_project(conn, org_id, "web", sampling_rate=0.0)
+        _key_id, public_key = await _seed_key(conn, org_id, project_id)
+    try:
+        envelope = _valid_envelope()
+        resp = await client.post(
+            f"/ingest/{project_id}/",
+            headers={"X-Crashlens-Key": public_key},
+            content=json.dumps(envelope),
+        )
+        assert resp.status_code == 202
+        assert resp.json() == {"id": None}
+
+        jobs = await _queued_jobs()
+        matching = [j for j in jobs if j.function == PROCESS_EVENT_JOB]
+        assert matching == []
+    finally:
+        async with superuser_engine.begin() as conn:
+            await conn.execute(text("DELETE FROM orgs WHERE id = :id"), {"id": org_id})
+
+
+async def test_sampling_rate_one_still_enqueues(
+    superuser_engine, redis_client, client
+) -> None:
+    """A project with the default sampling_rate 1.0 behaves exactly as before:
+
+    202 with the real event id, and the job lands on the arq queue.
+    """
+    async with superuser_engine.begin() as conn:
+        org_id = await _seed_org(conn, "SampleOneCo")
+        project_id = await _seed_project(conn, org_id, "web", sampling_rate=1.0)
+        _key_id, public_key = await _seed_key(conn, org_id, project_id)
+    try:
+        envelope = _valid_envelope()
+        resp = await client.post(
+            f"/ingest/{project_id}/",
+            headers={"X-Crashlens-Key": public_key},
+            content=json.dumps(envelope),
+        )
+        assert resp.status_code == 202
+        assert resp.json() == {"id": envelope["event_id"]}
+
+        jobs = await _queued_jobs()
+        matching = [j for j in jobs if j.function == PROCESS_EVENT_JOB]
+        assert len(matching) == 1
+        assert matching[0].kwargs["envelope"]["event_id"] == envelope["event_id"]
     finally:
         async with superuser_engine.begin() as conn:
             await conn.execute(text("DELETE FROM orgs WHERE id = :id"), {"id": org_id})

@@ -14,7 +14,8 @@ payload content back to the client.
 DSN RESOLUTION SESSION: :func:`resolve_dsn_key` reads ``dsn_keys`` through
 ``system_session`` (app/db.py bootstrap flow 4), the ONLY sanctioned cross-tenant
 lookup for the hot path. It runs BEFORE any org context exists, learns which
-project/org an event belongs to, and reads nothing else.
+project/org an event belongs to, and (via a JOIN to ``projects``) the
+project's per-project ``sampling_rate``; it reads nothing else.
 """
 
 import datetime
@@ -58,12 +59,18 @@ class InvalidEnvelope(IngestError):
 
 @dataclass
 class DsnKeyRecord:
-    """The fields of a resolved DSN key needed to authorise and route an event."""
+    """The fields of a resolved DSN key needed to authorise and route an event.
+
+    ``sampling_rate`` is the owning project's config, read via a JOIN in the
+    same query (see :func:`resolve_dsn_key`) so the ingest sampling decision
+    (W6-04) never needs a second, tenant-scoped lookup.
+    """
 
     id: uuid.UUID
     org_id: uuid.UUID
     project_id: uuid.UUID
     status: str
+    sampling_rate: float
 
 
 def decompress_gzip(data: bytes) -> bytes:
@@ -183,17 +190,23 @@ async def resolve_dsn_key(
 ) -> DsnKeyRecord | None:
     """Return the DSN key row for ``public_key`` or None if no such key exists.
 
-    Reads ``dsn_keys`` through ``system_session`` (the sanctioned BYPASSRLS hot
-    path lookup). The status is returned as-is; the caller decides that a
-    non-``active`` key is unauthorised. ``session_factory`` is injectable for
+    Reads ``dsn_keys`` JOINed to ``projects`` through ``system_session`` (the
+    sanctioned BYPASSRLS hot path lookup; migration 0005 grants the bootstrap
+    role SELECT on ``projects`` for exactly this JOIN). The status is returned
+    as-is; the caller decides that a non-``active`` key is unauthorised. The
+    JOIN also returns the project's ``sampling_rate`` so the ingest sampling
+    decision needs no second query. ``session_factory`` is injectable for
     tests; production omits it. The key itself is never logged here or by callers.
     """
     async with system_session(session_factory=session_factory) as session:
         row = (
             await session.execute(
                 text(
-                    "SELECT id, org_id, project_id, status "
-                    "FROM dsn_keys WHERE public_key = :pk"
+                    "SELECT dsn_keys.id, dsn_keys.org_id, dsn_keys.project_id, "
+                    "dsn_keys.status, projects.sampling_rate "
+                    "FROM dsn_keys "
+                    "JOIN projects ON projects.id = dsn_keys.project_id "
+                    "WHERE dsn_keys.public_key = :pk"
                 ),
                 {"pk": public_key},
             )
@@ -205,4 +218,5 @@ async def resolve_dsn_key(
         org_id=row.org_id,
         project_id=row.project_id,
         status=row.status,
+        sampling_rate=row.sampling_rate,
     )

@@ -383,3 +383,70 @@ async def test_project_endpoints_enforce_member_and_admin_authz(
                 text("DELETE FROM users WHERE id IN (:a, :m, :o)"),
                 {"a": admin_id, "m": member_id, "o": outsider_id},
             )
+
+
+# --- Per-project sampling PATCH (W6-04) ----------------------------------------
+@pytest.mark.isolation
+async def test_sampling_rate_patch_admin_only_and_bounds_validated(
+    superuser_engine, client
+) -> None:
+    """The sampling PATCH is admin-only and bounds-validated end to end.
+
+    A member is refused (403); an admin's update is reflected in both the
+    PATCH response and a subsequent GET; out-of-bounds values are rejected
+    with 400 without changing the stored rate.
+    """
+    admin_email = f"sadmin-{uuid.uuid4()}@example.test"
+    member_email = f"smember-{uuid.uuid4()}@example.test"
+    async with superuser_engine.begin() as conn:
+        org_id = await _seed_org(conn, "SamplingAuthzCo")
+        admin_id = await _seed_user(conn, admin_email, _KNOWN_PASSWORD)
+        member_id = await _seed_user(conn, member_email, _KNOWN_PASSWORD)
+        await _add_membership(conn, org_id, admin_id, "admin")
+        await _add_membership(conn, org_id, member_id, "member")
+    admin_h = {"Authorization": f"Bearer {security.create_access_token(admin_id)}"}
+    member_h = {"Authorization": f"Bearer {security.create_access_token(member_id)}"}
+    try:
+        create = await client.post(
+            f"/orgs/{org_id}/projects",
+            json={"name": "Sampled"},
+            headers=admin_h,
+        )
+        assert create.status_code == 201
+        assert create.json()["sampling_rate"] == 1.0
+        project_id = create.json()["id"]
+        url = f"/orgs/{org_id}/projects/{project_id}"
+
+        # A member cannot change the sampling rate.
+        member_patch = await client.patch(
+            url, json={"sampling_rate": 0.5}, headers=member_h
+        )
+        assert member_patch.status_code == 403
+
+        # An admin can, and the new rate is reflected immediately.
+        admin_patch = await client.patch(
+            url, json={"sampling_rate": 0.5}, headers=admin_h
+        )
+        assert admin_patch.status_code == 200
+        assert admin_patch.json()["sampling_rate"] == 0.5
+
+        detail = await client.get(url, headers=admin_h)
+        assert detail.status_code == 200
+        assert detail.json()["sampling_rate"] == 0.5
+
+        # Out-of-bounds values are rejected with 400 and change nothing.
+        assert (
+            await client.patch(url, json={"sampling_rate": 1.5}, headers=admin_h)
+        ).status_code == 400
+        assert (
+            await client.patch(url, json={"sampling_rate": -0.1}, headers=admin_h)
+        ).status_code == 400
+        still = await client.get(url, headers=admin_h)
+        assert still.json()["sampling_rate"] == 0.5
+    finally:
+        async with superuser_engine.begin() as conn:
+            await conn.execute(text("DELETE FROM orgs WHERE id = :id"), {"id": org_id})
+            await conn.execute(
+                text("DELETE FROM users WHERE id IN (:a, :m)"),
+                {"a": admin_id, "m": member_id},
+            )

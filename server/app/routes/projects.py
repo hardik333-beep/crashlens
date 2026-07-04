@@ -29,6 +29,7 @@ class ProjectOut(BaseModel):
     name: str
     slug: str
     platform: str | None
+    sampling_rate: float
     created_at: str
 
 
@@ -54,6 +55,10 @@ class CreateProjectRequest(BaseModel):
     platform: str | None = None
 
 
+class UpdateSamplingRequest(BaseModel):
+    sampling_rate: float
+
+
 _PROJECT_NOT_FOUND = HTTPException(
     status_code=status.HTTP_404_NOT_FOUND,
     detail="Project not found.",
@@ -66,6 +71,7 @@ def _project_out(project: dict) -> ProjectOut:
         name=project["name"],
         slug=project["slug"],
         platform=project["platform"],
+        sampling_rate=project["sampling_rate"],
         created_at=project["created_at"].isoformat(),
     )
 
@@ -141,6 +147,37 @@ async def delete_project(
     deleted = await projects.delete_project(ctx.org_id, project_id)
     if not deleted:
         raise _PROJECT_NOT_FOUND
+
+
+def _validate_sampling_rate(sampling_rate: float) -> None:
+    """Raise a 400 if ``sampling_rate`` is outside the valid 0..1 range.
+
+    Pulled out as its own function so it is unit-testable without a database
+    or an authenticated request (see test_projects_unit.py).
+    """
+    if not 0.0 <= sampling_rate <= 1.0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sampling_rate must be between 0 and 1.",
+        )
+
+
+@router.patch(
+    "/orgs/{org_id}/projects/{project_id}",
+    response_model=ProjectOut,
+)
+async def update_project_sampling(
+    project_id: uuid.UUID,
+    body: UpdateSamplingRequest,
+    ctx: Annotated[OrgContext, Depends(require_org_admin)],
+) -> ProjectOut:
+    _validate_sampling_rate(body.sampling_rate)
+    project = await projects.update_project_sampling(
+        ctx.org_id, project_id, body.sampling_rate
+    )
+    if project is None:
+        raise _PROJECT_NOT_FOUND
+    return _project_out(project)
 
 
 # --- DSN keys -----------------------------------------------------------------

@@ -1,13 +1,93 @@
 import { useCallback, useState } from "react";
+import type { ChangeEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { CopyButton } from "../components/CopyButton";
 import { OrgNav } from "../components/OrgNav";
 import { EmptyState, ErrorView, LoadingView } from "../components/StateViews";
-import { createKey, fetchProject, revokeKey } from "../lib/endpoints";
+import {
+  createKey,
+  fetchProject,
+  revokeKey,
+  updateProjectSampling,
+} from "../lib/endpoints";
 import type { DsnKey } from "../lib/types";
 import { useAsyncData } from "../lib/useAsyncData";
 import { useOrgRole } from "../lib/useOrg";
+
+// The only four sampling rates the UI offers, in plain language (no
+// "sampling rate" jargon in the visible option text).
+const SAMPLING_OPTIONS: ReadonlyArray<{ rate: number; label: string }> = [
+  { rate: 1.0, label: "Keep every event (100%)" },
+  { rate: 0.5, label: "Keep half of events (50%)" },
+  { rate: 0.25, label: "Keep a quarter of events (25%)" },
+  { rate: 0.1, label: "Keep one in ten events (10%)" },
+];
+
+function SamplingControl({
+  orgId,
+  projectId,
+  samplingRate,
+  isAdmin,
+  onUpdated,
+}: {
+  orgId: string;
+  projectId: string;
+  samplingRate: number;
+  isAdmin: boolean;
+  onUpdated: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const percentKept = Math.round(samplingRate * 100);
+
+  const onChange = useCallback(
+    async (event: ChangeEvent<HTMLSelectElement>) => {
+      const rate = Number(event.target.value);
+      setError(null);
+      setBusy(true);
+      try {
+        await updateProjectSampling(orgId, projectId, rate);
+        onUpdated();
+      } catch {
+        setError(
+          "Could not update how many events are kept. Please try again.",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [orgId, projectId, onUpdated],
+  );
+
+  return (
+    <div className="stack">
+      <h2>Keep every event, or keep a sample of events</h2>
+      {isAdmin ? (
+        <label className="field">
+          <span>How many events to keep</span>
+          <select
+            value={samplingRate}
+            onChange={(e) => void onChange(e)}
+            disabled={busy}
+          >
+            {SAMPLING_OPTIONS.map((option) => (
+              <option key={option.rate} value={option.rate}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <p className="muted">
+          An administrator can change how many events are kept.
+        </p>
+      )}
+      <p className="muted">Keeping {percentKept}% of incoming events.</p>
+      {error !== null && <ErrorView message={error} />}
+    </div>
+  );
+}
 
 function InstallSnippet({
   ingestUrl,
@@ -176,6 +256,14 @@ export function ProjectDetailPage() {
           </div>
         </>
       )}
+
+      <SamplingControl
+        orgId={orgId}
+        projectId={projectId}
+        samplingRate={detail.sampling_rate}
+        isAdmin={isAdmin}
+        onUpdated={reloadProject}
+      />
     </section>
   );
 }

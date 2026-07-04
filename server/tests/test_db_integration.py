@@ -394,10 +394,39 @@ async def test_system_session_cannot_read_outside_the_four_tables(
     app_sessionmaker, two_orgs
 ) -> None:
     # (c) crashlens_system has no SELECT grant on issues (or any table beyond
-    # the four): the read raises a privilege error instead of bypassing RLS.
+    # its five-table allowlist, per migration 0005): the read raises a
+    # privilege error instead of bypassing RLS.
     with pytest.raises(DBAPIError):
         async with system_session(session_factory=app_sessionmaker) as session:
             await session.execute(text("SELECT count(*) FROM issues"))
+
+
+async def test_system_session_reads_projects_for_sampling_rate(
+    app_sessionmaker, two_orgs
+) -> None:
+    # Migration 0005 (W6-04): crashlens_system gains SELECT on projects so the
+    # ingest hot path can JOIN dsn_keys -> projects for sampling_rate in the
+    # same pre-tenant-context lookup. Verify it can read projects across BOTH
+    # orgs (still no tenant scoping -- BYPASSRLS is unaffected) but still
+    # cannot write to it.
+    async with system_session(session_factory=app_sessionmaker) as session:
+        rates = (
+            await session.execute(
+                text(
+                    "SELECT id, sampling_rate FROM projects WHERE id IN (:a, :b)"
+                ),
+                {"a": two_orgs["proj_a"], "b": two_orgs["proj_b"]},
+            )
+        ).all()
+        assert {row.id for row in rates} == {two_orgs["proj_a"], two_orgs["proj_b"]}
+        assert all(row.sampling_rate == 1.0 for row in rates)
+
+    with pytest.raises(DBAPIError):
+        async with system_session(session_factory=app_sessionmaker) as session:
+            await session.execute(
+                text("UPDATE projects SET sampling_rate = 0.5 WHERE id = :id"),
+                {"id": two_orgs["proj_a"]},
+            )
 
 
 @pytest.mark.isolation

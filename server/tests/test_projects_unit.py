@@ -8,10 +8,13 @@ before any database access is required.
 import re
 import uuid
 
+import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from app import projects, security
 from app.main import create_app
+from app.routes.projects import _validate_sampling_rate
 
 
 # --- Project slug -------------------------------------------------------------
@@ -76,3 +79,16 @@ async def test_members_without_token_is_401() -> None:
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(f"/orgs/{uuid.uuid4()}/members")
     assert response.status_code == 401
+
+
+# --- Sampling rate PATCH bounds validation (W6-04) -----------------------------
+@pytest.mark.parametrize("rate", [0.0, 0.25, 0.5, 1.0])
+def test_valid_sampling_rate_passes(rate: float) -> None:
+    _validate_sampling_rate(rate)  # must not raise
+
+
+@pytest.mark.parametrize("rate", [-0.01, 1.01, -1.0, 2.0])
+def test_out_of_bounds_sampling_rate_raises_400(rate: float) -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_sampling_rate(rate)
+    assert exc_info.value.status_code == 400

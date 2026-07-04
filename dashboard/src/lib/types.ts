@@ -18,6 +18,9 @@ export interface Project {
   name: string;
   slug: string;
   platform: string | null;
+  // Fraction of incoming events kept for this project (1.0 = keep every
+  // event). Enforced at ingest, before the event body is even read.
+  sampling_rate: number;
   created_at: string;
 }
 
@@ -63,6 +66,10 @@ export interface IssueListItem {
   last_seen: string;
   event_count: number;
   assigned_to: string | null;
+  // Release-tracking fields: the release an error was marked fixed in, and the
+  // release it came back in on a regression. Both null until set.
+  resolved_in_release: string | null;
+  regressed_in_release: string | null;
 }
 
 export interface IssueListResult {

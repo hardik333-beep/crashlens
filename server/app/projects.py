@@ -60,7 +60,7 @@ async def _load_project_row(
     return (
         await session.execute(
             text(
-                "SELECT id, name, slug, platform, created_at "
+                "SELECT id, name, slug, platform, sampling_rate, created_at "
                 "FROM projects WHERE id = :pid"
             ),
             {"pid": str(project_id)},
@@ -74,6 +74,7 @@ def _project_dict(row: object) -> dict:
         "name": row.name,  # type: ignore[attr-defined]
         "slug": row.slug,  # type: ignore[attr-defined]
         "platform": row.platform,  # type: ignore[attr-defined]
+        "sampling_rate": row.sampling_rate,  # type: ignore[attr-defined]
         "created_at": row.created_at,  # type: ignore[attr-defined]
     }
 
@@ -88,7 +89,7 @@ async def list_projects(
         rows = (
             await session.execute(
                 text(
-                    "SELECT id, name, slug, platform, created_at "
+                    "SELECT id, name, slug, platform, sampling_rate, created_at "
                     "FROM projects ORDER BY created_at DESC"
                 )
             )
@@ -121,7 +122,7 @@ async def create_project(
                     text(
                         "INSERT INTO projects (id, org_id, name, slug, platform) "
                         "VALUES (:id, :oid, :name, :slug, :platform) "
-                        "RETURNING id, name, slug, platform, created_at"
+                        "RETURNING id, name, slug, platform, sampling_rate, created_at"
                     ),
                     {
                         "id": str(project_id),
@@ -133,6 +134,36 @@ async def create_project(
                 )
             ).one()
     except IntegrityError:
+        return None
+    return _project_dict(row)
+
+
+async def update_project_sampling(
+    org_id: uuid.UUID,
+    project_id: uuid.UUID,
+    sampling_rate: float,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> dict | None:
+    """Update a project's ``sampling_rate`` and return the refreshed project.
+
+    Returns None if the project is not visible in this org: RLS scopes the
+    UPDATE, so a project in another org affects zero rows and the caller
+    reports a 404, not a cross-tenant write. Bounds validation (0..1) is the
+    route layer's job, done BEFORE this is called, so this function trusts its
+    input the same way every other service function does.
+    """
+    async with tenant_session(str(org_id), session_factory=session_factory) as session:
+        row = (
+            await session.execute(
+                text(
+                    "UPDATE projects SET sampling_rate = :rate WHERE id = :pid "
+                    "RETURNING id, name, slug, platform, sampling_rate, created_at"
+                ),
+                {"rate": sampling_rate, "pid": str(project_id)},
+            )
+        ).one_or_none()
+    if row is None:
         return None
     return _project_dict(row)
 

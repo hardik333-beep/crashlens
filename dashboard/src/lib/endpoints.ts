@@ -86,6 +86,18 @@ export function deleteProject(orgId: string, projectId: string): Promise<void> {
   });
 }
 
+// Admin-only: change what fraction of incoming events this project keeps.
+export function updateProjectSampling(
+  orgId: string,
+  projectId: string,
+  samplingRate: number,
+): Promise<Project> {
+  return apiRequest<Project>(`/orgs/${orgId}/projects/${projectId}`, {
+    method: "PATCH",
+    body: { sampling_rate: samplingRate },
+  });
+}
+
 // --- Keys --------------------------------------------------------------------
 export function createKey(orgId: string, projectId: string): Promise<DsnKey> {
   return apiRequest<DsnKey>(`/orgs/${orgId}/projects/${projectId}/keys`, {
