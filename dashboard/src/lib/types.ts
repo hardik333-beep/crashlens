@@ -195,6 +195,60 @@ export interface AcceptInviteResult {
 export interface MeResult {
   user: User;
   orgs: Org[];
+  // Instance-wide operator flag (not an org role). Drives the "Instance" nav
+  // link and the admin pages; the API enforces it server-side regardless.
+  is_instance_admin: boolean;
+}
+
+// --- Instance-admin panel (operator views) -----------------------------------
+export interface EventsPartition {
+  name: string;
+  // Planner row estimate, not an exact count (see server/app/admin.py).
+  row_estimate: number;
+}
+
+export interface AdminOverview {
+  users_count: number;
+  orgs_count: number;
+  projects_count: number;
+  issues_count: number;
+  events_last_24h: number;
+  // Null when the background queue (Redis) is unreachable.
+  queue_depth: number | null;
+  partitions: EventsPartition[];
+  db_ok: boolean;
+  redis_ok: boolean;
+}
+
+export interface AdminOrg {
+  id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+  member_count: number;
+  project_count: number;
+}
+
+export interface AdminOrgListResult {
+  orgs: AdminOrg[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  created_at: string;
+  is_instance_admin: boolean;
+  last_login_at: string | null;
+}
+
+export interface AdminUserListResult {
+  users: AdminUser[];
+  total: number;
+  page: number;
+  per_page: number;
 }
 
 export interface CreateInviteResult {

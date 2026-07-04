@@ -3,6 +3,10 @@
 import { apiRequest, apiUpload } from "./api";
 import type {
   AcceptInviteResult,
+  AdminOrgListResult,
+  AdminOverview,
+  AdminUser,
+  AdminUserListResult,
   AlertChannel,
   AlertChannelType,
   AuditLogListResult,
@@ -342,4 +346,49 @@ export function listAuditLog(
   return apiRequest<AuditLogListResult>(
     `/orgs/${orgId}/audit-log${suffix ? `?${suffix}` : ""}`,
   );
+}
+
+// --- Instance-admin panel (operator views) -----------------------------------
+export function fetchAdminOverview(): Promise<AdminOverview> {
+  return apiRequest<AdminOverview>("/admin/overview");
+}
+
+function pageQuery(page?: number, perPage?: number): string {
+  const query = new URLSearchParams();
+  if (page) {
+    query.set("page", String(page));
+  }
+  if (perPage) {
+    query.set("per_page", String(perPage));
+  }
+  const suffix = query.toString();
+  return suffix ? `?${suffix}` : "";
+}
+
+export function listAdminOrgs(
+  page?: number,
+  perPage?: number,
+): Promise<AdminOrgListResult> {
+  return apiRequest<AdminOrgListResult>(
+    `/admin/orgs${pageQuery(page, perPage)}`,
+  );
+}
+
+export function listAdminUsers(
+  page?: number,
+  perPage?: number,
+): Promise<AdminUserListResult> {
+  return apiRequest<AdminUserListResult>(
+    `/admin/users${pageQuery(page, perPage)}`,
+  );
+}
+
+export function setInstanceAdmin(
+  userId: string,
+  enabled: boolean,
+): Promise<AdminUser> {
+  return apiRequest<AdminUser>(`/admin/users/${userId}/instance-admin`, {
+    method: "POST",
+    body: { enabled },
+  });
 }

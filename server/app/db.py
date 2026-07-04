@@ -85,6 +85,11 @@ _ORG_GUC = "app.current_org"
 # SET LOCAL ROLE to succeed.
 _SYSTEM_ROLE = "crashlens_system"
 
+# Read-only BYPASSRLS operator role created by migration 0007, used ONLY by the
+# instance-admin panel for cross-tenant stats. Same membership requirement as
+# the bootstrap role (GRANT crashlens_admin TO <login user>).
+_ADMIN_ROLE = "crashlens_admin"
+
 
 def events_partition_name(day: datetime.date) -> str:
     """Return the physical partition table name for ``events`` on ``day``.
@@ -159,4 +164,37 @@ async def system_session(
             # Role name is a compile-time constant, not user input; SET ROLE
             # takes no bind parameters.
             await session.execute(text(f"SET LOCAL ROLE {_SYSTEM_ROLE}"))
+            yield session
+
+
+@asynccontextmanager
+async def admin_session(
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> AsyncIterator[AsyncSession]:
+    """Yield a READ-ONLY cross-tenant session for the instance-admin panel ONLY.
+
+    This backs the instance-operator views (W6-03): whole-instance counts,
+    recent event volume, per-org rollups, and partition stats. Those reads span
+    every tenant, so they cannot use :func:`tenant_session` (RLS-bound to one
+    org) and must not hand-write org filters. They also cannot use
+    :func:`system_session`, whose bootstrap role is granted SELECT on only five
+    tables on purpose.
+
+    Opens a transaction and issues ``SET LOCAL ROLE crashlens_admin`` as its
+    first statement. ``crashlens_admin`` (migration 0007) has BYPASSRLS and
+    SELECT-only grants on exactly the tables the panel reads (users, orgs,
+    org_memberships, projects, issues, events, releases, alert_channels,
+    audit_log): any write raises a privilege error, and any unlisted table is
+    unreadable. ``SET LOCAL`` reverts at COMMIT / ROLLBACK, so the bypass never
+    outlives the transaction and a plain session stays fully RLS-bound.
+
+    SAFETY: this is gated at the route layer by ``require_instance_admin`` (a
+    403 for non-instance-admins) and is NEVER used in a tenant request path.
+    Tenant data access always goes through :func:`tenant_session`.
+    """
+    factory = session_factory or get_sessionmaker()
+    async with factory() as session:
+        async with session.begin():
+            # Role name is a compile-time constant, not user input.
+            await session.execute(text(f"SET LOCAL ROLE {_ADMIN_ROLE}"))
             yield session

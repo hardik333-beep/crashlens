@@ -78,6 +78,25 @@ async def require_org_member(
     return OrgContext(org_id=org_id, role=role, user=user)
 
 
+async def require_instance_admin(
+    user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """Return the caller only if they are an INSTANCE administrator, else 403.
+
+    This is the self-hoster's operator role (``users.is_instance_admin``), not
+    an org role: it is instance-wide and independent of any org membership. It
+    gates the instance-admin panel (cross-tenant operator stats and the
+    instance-admin toggle). The 403 message is uniform, mirroring the org-admin
+    dependencies above.
+    """
+    if not user.is_instance_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Instance administrator access is required.",
+        )
+    return user
+
+
 async def require_org_admin(
     org_id: uuid.UUID,
     user: Annotated[User, Depends(get_current_user)],

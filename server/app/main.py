@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.config import Settings, get_settings
+from app.routes.admin import router as admin_router
 from app.routes.alerts import router as alerts_router
 from app.routes.audit import router as audit_router
 from app.routes.auth import router as auth_router
@@ -54,6 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ingest_router)
     app.include_router(alerts_router)
     app.include_router(audit_router)
+    app.include_router(admin_router)
 
     return app
 

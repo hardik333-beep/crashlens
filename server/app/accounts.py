@@ -186,6 +186,18 @@ async def signup(
     org context for an actor to act "within" the way every other audited action
     has one. The org's audit log therefore starts empty at signup and gains its
     first row on the next sensitive action a member takes.
+
+    FIRST-USER-BECOMES-INSTANCE-ADMIN (W6-03): on a FRESH instance (the ``users``
+    table is empty at the moment this signup inserts), the first account is made
+    the instance administrator (``is_instance_admin = true``) so a self-hoster
+    is never locked out of the operator panel. The emptiness check and the
+    INSERT run in the SAME transaction, but there is no unique constraint that
+    would serialize two truly simultaneous fresh-instance signups, so the worst
+    case of a double-signup race is TWO instance admins -- benign (either can
+    demote the other via the panel, guarded so the last admin cannot orphan the
+    instance). A CLI escape hatch (``python -m app.cli make-admin <email>``)
+    also exists for recovery. On any non-empty instance, new signups are plain
+    members with ``is_instance_admin = false`` (the column default).
     """
     existing = await load_user_by_email(email, session_factory=session_factory)
     # Hash regardless of existence so timing does not separate the two paths.
@@ -201,12 +213,22 @@ async def signup(
         # freely; orgs and org_memberships pass WITH CHECK because their scope
         # equals the GUC. All three rows commit together or none do.
         async with tenant_session(str(org_id), session_factory=session_factory) as session:
+            # Fresh instance? The first-ever user becomes the instance admin.
+            # Read inside this transaction so it reflects committed state.
+            is_first_user = not (
+                await session.execute(text("SELECT EXISTS (SELECT 1 FROM users)"))
+            ).scalar_one()
             await session.execute(
                 text(
-                    "INSERT INTO users (id, email, password_hash) "
-                    "VALUES (:id, :email, :ph)"
+                    "INSERT INTO users (id, email, password_hash, is_instance_admin) "
+                    "VALUES (:id, :email, :ph, :admin)"
                 ),
-                {"id": str(user_id), "email": email, "ph": password_hash},
+                {
+                    "id": str(user_id),
+                    "email": email,
+                    "ph": password_hash,
+                    "admin": is_first_user,
+                },
             )
             await session.execute(
                 text("INSERT INTO orgs (id, name, slug) VALUES (:id, :name, :slug)"),
@@ -231,6 +253,7 @@ async def signup(
         "org_name": org_name,
         "slug": slug,
         "role": "admin",
+        "is_instance_admin": is_first_user,
     }
 
 

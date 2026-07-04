@@ -76,6 +76,10 @@ class LoginResponse(BaseModel):
 class MeResponse(BaseModel):
     user: UserOut
     orgs: list[OrgOut]
+    # Instance-wide operator flag (NOT an org role): true only for a self-hoster
+    # who administers the whole instance. The dashboard shows the instance-admin
+    # nav and pages only when this is true; the API still enforces it server-side.
+    is_instance_admin: bool
 
 
 class AcceptInviteResponse(BaseModel):
@@ -153,6 +157,7 @@ async def me(user: Annotated[User, Depends(get_current_user)]) -> MeResponse:
     return MeResponse(
         user=UserOut(id=str(user.id), email=user.email),
         orgs=[OrgOut(**o) for o in orgs],
+        is_instance_admin=user.is_instance_admin,
     )
 
 
