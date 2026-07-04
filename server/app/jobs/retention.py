@@ -58,30 +58,33 @@ plain session from the default sessionmaker (no ``SET LOCAL ROLE``, no
 ``system_session``, both of which exist specifically to manage ROW visibility
 that does not apply to this operation.
 
-FLAGGED FOR GOVERNOR REVIEW -- SECURITY INVOKER / privilege gap
------------------------------------------------------------------
-Both functions are created with ``CREATE OR REPLACE FUNCTION ... LANGUAGE
-plpgsql`` and no ``SECURITY DEFINER`` clause, so they run as PostgreSQL's
-default ``SECURITY INVOKER``: the DDL inside executes with the CALLING role's
-privileges, not the function owner's (the migration/superuser role), even
-though the function is registered as PUBLIC-executable by Postgres's default
-(functions get an implicit ``EXECUTE`` grant to PUBLIC unless revoked, and
-migration 0001 does not revoke it, so no explicit EXECUTE grant is needed).
-The gap is one level deeper: attaching or detaching a partition
+PRIVILEGE MODEL FOR THE PARTITION FUNCTIONS (resolved; governor 2026-07-04)
+-----------------------------------------------------------------------------
+As originally created by migration 0001, both functions were the PostgreSQL
+default ``SECURITY INVOKER``, but attaching/detaching a partition
 (``CREATE TABLE ... PARTITION OF`` / ``DROP TABLE`` on a partition) requires
-the invoking role to OWN the parent table (or be superuser) -- migration 0001
-grants ``crashlens_app`` only ``SELECT, INSERT, UPDATE, DELETE`` on ``events``,
-not ownership. If the worker's deployed login role is a non-superuser member
-of ``crashlens_app`` (as the migration's own deploy instructions specify for
-production), calling either function is expected to fail with a
-"must be owner of relation events"-style privilege error. This was NOT
-worked around here (no GRANT was added, no migration was touched -- both are
-out of scope for this slice). Flagging for the governor: either (1) a future
-migration marks these two functions ``SECURITY DEFINER`` owned by the
-schema-owner role so the invoker's privileges stop mattering, or (2) the
-worker's deployed login role is granted ownership-equivalent rights on
-``events`` specifically for partition management. Do not silently widen
-grants to work around this; decide and implement via a reviewed migration.
+the invoking role to OWN the parent ``events`` table -- and the worker's
+deployed login role is a non-superuser member of ``crashlens_app`` with only
+``SELECT, INSERT, UPDATE, DELETE``, not ownership, so both jobs' DDL calls
+would have failed in production with a "must be owner of relation events"
+privilege error. This slice flagged the gap instead of widening grants; the
+governor decided the fix on 2026-07-04 and migration 0003
+(``0003_partition_fn_security_definer``) implements it:
+
+- Both functions are now ``SECURITY DEFINER``: the DDL inside runs with the
+  function OWNER's privileges (the migration/schema-owner role that owns
+  ``events``), so the caller no longer needs table ownership.
+- Their ``search_path`` is pinned (``SET search_path = public, pg_temp``),
+  mandatory on any SECURITY DEFINER function: an unpinned definer resolves
+  names via the CALLER's search_path, letting a malicious caller shadow
+  public objects and escalate via the definer's privileges.
+- ``EXECUTE`` is revoked from PUBLIC and granted only to ``crashlens_app``,
+  so SECURITY DEFINER does not turn Postgres's default PUBLIC-execute grant
+  into "any connected role may run partition DDL as the owner".
+
+Net effect for this module: the worker's login role (member of
+``crashlens_app``) can call both functions on a plain session, and nothing
+else changes here.
 
 CROSS-ORG READ FOR retention_days: WHY IT GOES THROUGH tenant_session PER ORG
 -------------------------------------------------------------------------------

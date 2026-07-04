@@ -354,3 +354,77 @@ async def test_per_project_trim_deletes_only_that_projects_over_retention_rows(
     finally:
         async with superuser_engine.begin() as conn:
             await conn.execute(text(f"DROP TABLE IF EXISTS {partition_name}"))
+
+
+@pytest.mark.db
+async def test_partition_functions_executable_by_nonsuperuser_app_role(
+    superuser_engine, app_sessionmaker
+) -> None:
+    """Prove migration 0003 closed the SECURITY INVOKER privilege gap.
+
+    Exactly the failure W2-04 flagged: a non-superuser member of
+    ``crashlens_app`` (the ``crashlens_test`` login role) calling the
+    partition functions used to hit a "must be owner of relation events"
+    privilege error, because SECURITY INVOKER DDL required ownership of the
+    parent table. After 0003 (SECURITY DEFINER, pinned search_path, EXECUTE
+    narrowed to crashlens_app) both calls must succeed without any privilege
+    error.
+    """
+    # Ground the migration's effect first: both functions are SECURITY
+    # DEFINER with a pinned search_path.
+    async with superuser_engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    "SELECT proname, prosecdef, proconfig FROM pg_proc "
+                    "WHERE proname IN "
+                    "('create_events_partition', 'drop_events_partitions_before')"
+                )
+            )
+        ).all()
+        assert {row.proname for row in rows} == {
+            "create_events_partition",
+            "drop_events_partitions_before",
+        }
+        for row in rows:
+            assert row.prosecdef is True, f"{row.proname} is not SECURITY DEFINER"
+            assert row.proconfig is not None and any(
+                setting.startswith("search_path=") for setting in row.proconfig
+            ), f"{row.proname} has no pinned search_path"
+
+    future_day = datetime.date(2998, 3, 1)
+    future_name = f"events_{future_day.strftime('%Y%m%d')}"
+    try:
+        # create_events_partition for a future day, as the non-superuser
+        # app-role member. Would have raised a privilege error before 0003.
+        async with app_sessionmaker() as session:
+            async with session.begin():
+                await session.execute(
+                    text("SELECT create_events_partition(:d)"), {"d": future_day}
+                )
+        async with superuser_engine.connect() as conn:
+            created = (
+                await conn.execute(
+                    text(f"SELECT to_regclass('public.{future_name}') IS NOT NULL")
+                )
+            ).scalar_one()
+            assert created is True
+
+        # drop_events_partitions_before with an ANCIENT cutoff, same role: no
+        # privilege error, and (nothing predates 1900) no partition removed --
+        # including the future one just created.
+        async with app_sessionmaker() as session:
+            async with session.begin():
+                await session.execute(
+                    text("SELECT drop_events_partitions_before(DATE '1900-01-01')")
+                )
+        async with superuser_engine.connect() as conn:
+            survives = (
+                await conn.execute(
+                    text(f"SELECT to_regclass('public.{future_name}') IS NOT NULL")
+                )
+            ).scalar_one()
+            assert survives is True
+    finally:
+        async with superuser_engine.begin() as conn:
+            await conn.execute(text(f"DROP TABLE IF EXISTS {future_name}"))
