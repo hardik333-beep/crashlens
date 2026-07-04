@@ -32,7 +32,7 @@ your own control.
 ## Quickstart
 
 ```bash
-git clone https://github.com/your-org/crashlens.git
+git clone https://github.com/hardik333-beep/crashlens.git
 cd crashlens
 cp .env.example .env   # then edit the placeholder values (see docs/configuration.md)
 

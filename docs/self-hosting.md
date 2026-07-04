@@ -19,7 +19,7 @@ starting point and goes one level deeper on each step.
 ### 1. Get the code and configure your environment
 
 ```bash
-git clone https://github.com/your-org/crashlens.git
+git clone https://github.com/hardik333-beep/crashlens.git
 cd crashlens
 cp .env.example .env
 ```
