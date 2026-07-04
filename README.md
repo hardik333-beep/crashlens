@@ -155,3 +155,5 @@ compatibility break.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Built by [ScaleGrowth](https://scalegrowth.digital).
