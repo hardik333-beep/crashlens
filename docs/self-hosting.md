@@ -24,10 +24,17 @@ cd crashlens
 cp .env.example .env
 ```
 
-Open `.env` and replace every `REPLACE_WITH_...` placeholder. At minimum you
-must set a real `POSTGRES_PASSWORD` (and keep it in sync with the password
-inside `DATABASE_URL`, since both variables have to agree) and a random
-`SECRET_KEY`. The comment in `.env.example` shows how to generate one:
+Open `.env` and replace every `REPLACE_WITH_...` placeholder. There are two
+database passwords, and each must agree with the connection URL that carries
+it:
+
+- `CRASHLENS_DB_APP_PASSWORD` is the runtime (application) password; keep it
+  in sync with the password inside `DATABASE_URL`.
+- `POSTGRES_PASSWORD` is the superuser password; keep it in sync with the
+  password inside `MIGRATIONS_DATABASE_URL`.
+
+You also need a random `SECRET_KEY`. The comment in `.env.example` shows how
+to generate one:
 
 ```bash
 python3 -c "import secrets; print(secrets.token_urlsafe(48))"
@@ -37,48 +44,47 @@ Every variable is documented in [configuration.md](configuration.md).
 
 ### 2. Create the database schema
 
+**How the two database users work.** The stack deliberately uses two
+Postgres users. `POSTGRES_USER` is the superuser the postgres container
+creates at first init: it owns the schema and is used for migrations only
+(DDL needs ownership), and the application never connects as it.
+`crashlens_login` is a non-superuser runtime user that the API and worker
+connect as via `DATABASE_URL`; because it is not a superuser, PostgreSQL Row
+Level Security actually constrains it, which is what makes tenant isolation
+real at the database layer. The `crashlens_login` role, its password
+(`CRASHLENS_DB_APP_PASSWORD`), and its membership in the privilege roles the
+migrations expect are all created automatically at first cluster init by
+`deploy/postgres-init/01-app-user.sh`; there is no manual role or grant step.
+
 Crashlens does not run migrations automatically when the API container
 starts (the `api` image's entrypoint is a plain `uvicorn` process, nothing
-else). Run them yourself, once, before the first `docker compose up`, using
-a one-off container built from the same image:
+else). Run them yourself, once, before the first `docker compose up`. The
+migration command overrides `DATABASE_URL` with `MIGRATIONS_DATABASE_URL`
+(the superuser connection), and that variable comes from YOUR shell, not
+from Compose: `docker compose` reads `.env` to interpolate the compose file,
+but it does not export anything into the shell you type commands in. So
+load `.env` into the shell first:
 
 ```bash
-docker compose run --rm api alembic upgrade head
+set -a; . ./.env; set +a
+docker compose run --rm -e DATABASE_URL=${MIGRATIONS_DATABASE_URL} api alembic upgrade head
 ```
 
 This works without the rest of the stack running, other than Postgres:
 Compose will start `postgres` first because `api` depends on it.
 
 `alembic.ini` sets no database URL itself; it reads `DATABASE_URL` from the
-environment through the application's own settings, so this command uses
-whatever you put in `.env`.
+environment through the application's own settings, which is why the one-off
+`-e DATABASE_URL=...` override is the entire mechanism for running
+migrations as the schema owner.
 
-**Grant the application roles.** Migration `0001` creates two PostgreSQL
-roles that Row Level Security depends on (`crashlens_app`, a bound
-read/write role, and `crashlens_system`, a narrow read-only bootstrap role),
-but a `CREATE ROLE` cannot grant itself membership to the login user your
-`DATABASE_URL` connects as. Do that once, right after the migration:
-
-```bash
-docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -c "GRANT crashlens_app TO $POSTGRES_USER; GRANT crashlens_system TO $POSTGRES_USER;"
-```
-
-`docker compose run --rm api ...` in the previous step starts `postgres` as
-a normal background service (because `api` depends on it), so it is already
-running and reachable with `exec` by this point; substitute your actual
-`.env` values for `$POSTGRES_USER` / `$POSTGRES_DB`, or run
-`export $(grep -v '^#' .env | xargs)` first so the shell picks them up.
-
-> **Note on tenant isolation.** The `POSTGRES_USER` the compose file
-> provisions is created by the official Postgres image as its bootstrap
-> superuser, and PostgreSQL superusers bypass Row Level Security entirely by
-> design (this is documented directly in migration `0001`'s own notes). For
-> a quick trial this is harmless. If you are running Crashlens for a real
-> team and want the database itself to enforce tenant isolation rather than
-> relying only on the application code, create a dedicated non-superuser
-> login role, grant it `crashlens_app` and `crashlens_system` as above, and
-> point `DATABASE_URL` at that role instead of the bootstrap superuser.
+> **Note on tenant isolation.** PostgreSQL superusers bypass Row Level
+> Security entirely by design (documented in migration `0001`'s own notes),
+> which is exactly why the default setup already splits the two users for
+> you: the app runs as the non-superuser `crashlens_login`, so RLS is
+> enforced out of the box. Keep it that way. Do not point `DATABASE_URL` at
+> the superuser, even to "fix" a permissions error; that would silently
+> disable tenant isolation.
 
 ### 3. Bring the stack up
 
@@ -144,7 +150,10 @@ git pull
 
 # 3. Apply any new migrations BEFORE restarting the application containers,
 #    so the schema a fresh api/worker process expects already exists.
-docker compose run --rm api alembic upgrade head
+#    Migrations run as the schema-owning superuser; load .env into the shell
+#    so ${MIGRATIONS_DATABASE_URL} expands.
+set -a; . ./.env; set +a
+docker compose run --rm -e DATABASE_URL=${MIGRATIONS_DATABASE_URL} api alembic upgrade head
 
 # 4. Rebuild and restart.
 docker compose up -d --build

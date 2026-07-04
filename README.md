@@ -36,9 +36,11 @@ git clone https://github.com/hardik333-beep/crashlens.git
 cd crashlens
 cp .env.example .env   # then edit the placeholder values (see docs/configuration.md)
 
-# Create the schema. Migrations are not run automatically, so this is a
-# required first step, before the api or worker can serve traffic.
-docker compose run --rm api alembic upgrade head
+# Create the schema. Migrations are not run automatically, and they run as
+# the schema-owning superuser (MIGRATIONS_DATABASE_URL), so load .env into
+# your shell first.
+set -a; . ./.env; set +a
+docker compose run --rm -e DATABASE_URL=${MIGRATIONS_DATABASE_URL} api alembic upgrade head
 
 docker compose up -d
 ```

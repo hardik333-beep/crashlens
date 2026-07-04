@@ -34,8 +34,12 @@ migration has run against the new schema they expect:
 git pull
 
 # 3. Migrate BEFORE restarting anything. A fresh api/worker process reads
-#    from a schema it expects to already exist.
-docker compose run --rm api alembic upgrade head
+#    from a schema it expects to already exist. Migrations run as the
+#    schema-owning superuser (MIGRATIONS_DATABASE_URL), and that variable
+#    must come from YOUR shell (docker compose reads .env only to fill in
+#    the compose file, not your command line), so load .env first.
+set -a; . ./.env; set +a
+docker compose run --rm -e DATABASE_URL=${MIGRATIONS_DATABASE_URL} api alembic upgrade head
 
 # 4. Rebuild the images (the dashboard and server images both changed) and
 #    restart.
@@ -52,7 +56,8 @@ If a release needs to be rolled back:
 ```bash
 docker compose down
 git checkout <previous-tag-or-commit>
-docker compose run --rm api alembic downgrade <previous-revision-id>
+set -a; . ./.env; set +a
+docker compose run --rm -e DATABASE_URL=${MIGRATIONS_DATABASE_URL} api alembic downgrade <previous-revision-id>
 docker compose up -d --build
 ```
 
@@ -60,6 +65,18 @@ Check the docstring of every migration between your current revision and the
 target before downgrading past it; as above, only `0004` is documented as
 lossy, but reading each one costs a minute and downgrading a database is not
 a decision to make on autopilot.
+
+## Upgrading a cluster that predates the two-user split
+
+If your Postgres data volume was created before the stack shipped the
+non-superuser `crashlens_login` runtime role, the init script that normally
+creates it (`deploy/postgres-init/01-app-user.sh`) never ran for you: the
+postgres image only executes init scripts at first cluster initialisation,
+never on a restart. The header comment of that script contains the exact
+one-time `psql` command to run as the superuser to create the role and its
+grants on an existing cluster; run it once, then point `DATABASE_URL` at
+`crashlens_login` (with `CRASHLENS_DB_APP_PASSWORD`) as `.env.example` now
+shows. Fresh installs need none of this.
 
 ## What does not need a migration
 

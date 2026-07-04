@@ -34,9 +34,20 @@ Pass a destination directory as the first argument
 the same disk as the instance it backs up does not protect you from a disk
 failure.
 
-The database dump requires the `api` service to be running to pick up its
-source maps volume; if `api` is not up, the script still writes the database
-dump and tells you to start `api` and re-run for the source maps half.
+The source maps archive requires the `api` service to be running so the
+script can borrow its volume mounts; if `api` is not up, the script still
+writes the database dump and tells you to start `api` and re-run for the
+source maps half.
+
+**The two-user database setup changes nothing here.** Both scripts run
+`pg_dump` / `pg_restore` inside the `postgres` container as `POSTGRES_USER`,
+the schema-owning superuser, which is exactly the right user for a full
+backup and restore (the non-superuser `crashlens_login` role is only for the
+running application). One nuance to know: a database-level `pg_dump` does
+not include cluster-level roles like `crashlens_login`, but you never need
+it to, because on any stack brought up from this repository the postgres
+init script (`deploy/postgres-init/01-app-user.sh`) creates those roles at
+first cluster init, before you would restore into it.
 
 ## Restoring
 
