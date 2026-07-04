@@ -38,6 +38,17 @@ class User(Base):
     is_instance_admin: Mapped[bool] = mapped_column(
         sa.Boolean(), nullable=False, server_default=sa.text("false")
     )
+    # Account-security columns added by migration 0002 (auth slice). Kept in sync
+    # with the migration by hand, like every other column here.
+    failed_login_count: Mapped[int] = mapped_column(
+        sa.Integer(), nullable=False, server_default=sa.text("0")
+    )
+    locked_until: Mapped[datetime.datetime | None] = mapped_column(
+        sa.TIMESTAMP(timezone=True), nullable=True
+    )
+    last_login_at: Mapped[datetime.datetime | None] = mapped_column(
+        sa.TIMESTAMP(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.text("now()")
     )

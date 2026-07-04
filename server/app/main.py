@@ -3,7 +3,9 @@
 from fastapi import FastAPI
 
 from app.config import Settings, get_settings
+from app.routes.auth import router as auth_router
 from app.routes.health import router as health_router
+from app.routes.orgs import router as orgs_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -18,6 +20,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Routes are mounted without an /api prefix: the reverse proxy strips /api
     # before forwarding, so GET /api/health from the browser reaches /health here.
     app.include_router(health_router)
+    app.include_router(auth_router)
+    app.include_router(orgs_router)
 
     return app
 
