@@ -1,64 +1,35 @@
-import { useEffect, useState } from "react";
+import { Navigate, Route, Routes } from "react-router-dom";
 
-interface HealthResponse {
-  status: string;
-  database: boolean;
-  redis: boolean;
-}
-
-type LoadState =
-  | { kind: "loading" }
-  | { kind: "error"; message: string }
-  | { kind: "success"; data: HealthResponse };
+import { AppLayout } from "./components/AppLayout";
+import { RequireAuth } from "./components/RequireAuth";
+import { InvitePage } from "./pages/InvitePage";
+import { LoginPage } from "./pages/LoginPage";
+import { MembersPage } from "./pages/MembersPage";
+import { OrgOverviewPage } from "./pages/OrgOverviewPage";
+import { ProjectDetailPage } from "./pages/ProjectDetailPage";
+import { ProjectsPage } from "./pages/ProjectsPage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { SignupPage } from "./pages/SignupPage";
 
 export function App() {
-  const [state, setState] = useState<LoadState>({ kind: "loading" });
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      try {
-        const response = await fetch("/api/health");
-        if (!response.ok) {
-          throw new Error(`The status check returned ${response.status}.`);
-        }
-        const data = (await response.json()) as HealthResponse;
-        if (!cancelled) {
-          setState({ kind: "success", data });
-        }
-      } catch (error: unknown) {
-        if (!cancelled) {
-          const message =
-            error instanceof Error ? error.message : "Unknown error.";
-          setState({ kind: "error", message });
-        }
-      }
-    }
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   return (
-    <main>
-      <h1>Crashlens</h1>
-      {state.kind === "loading" && <p>Checking system status...</p>}
-      {state.kind === "error" && (
-        <p role="alert">Could not reach the service: {state.message}</p>
-      )}
-      {state.kind === "success" && (
-        <section aria-label="System status">
-          <p>Overall status: {state.data.status}</p>
-          <ul>
-            <li>Database reachable: {state.data.database ? "yes" : "no"}</li>
-            <li>Queue reachable: {state.data.redis ? "yes" : "no"}</li>
-          </ul>
-        </section>
-      )}
-    </main>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/signup" element={<SignupPage />} />
+      <Route path="/invite" element={<InvitePage />} />
+      <Route element={<RequireAuth />}>
+        <Route element={<AppLayout />}>
+          <Route path="/" element={<OrgOverviewPage />} />
+          <Route path="/org/:orgId/projects" element={<ProjectsPage />} />
+          <Route
+            path="/org/:orgId/projects/:projectId"
+            element={<ProjectDetailPage />}
+          />
+          <Route path="/org/:orgId/members" element={<MembersPage />} />
+          <Route path="/org/:orgId/settings" element={<SettingsPage />} />
+        </Route>
+      </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }

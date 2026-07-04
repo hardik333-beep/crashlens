@@ -92,6 +92,28 @@ async def load_user_by_id(
         return result.scalar_one_or_none()
 
 
+async def load_users_by_ids(
+    user_ids: list[uuid.UUID],
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> dict[uuid.UUID, str]:
+    """Return a ``{user_id: email}`` map for the given ids. Plain session.
+
+    ``users`` carries no tenant scope and no RLS, so a plain ``crashlens_app``
+    session reads it directly (same discipline as ``load_user_by_id``). Callers
+    that already resolved a set of org members via ``tenant_session`` use this to
+    attach emails, which live on the RLS-exempt ``users`` table.
+    """
+    if not user_ids:
+        return {}
+    factory = session_factory or get_sessionmaker()
+    async with factory() as session:
+        rows = (
+            await session.execute(select(User.id, User.email).where(User.id.in_(user_ids)))
+        ).all()
+    return {row.id: row.email for row in rows}
+
+
 async def list_user_orgs(
     user_id: uuid.UUID,
     *,

@@ -191,3 +191,17 @@ def hash_invite_token(raw_token: str) -> str:
     secret.
     """
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+# --- DSN public keys ----------------------------------------------------------
+def generate_public_key() -> str:
+    """Return a fresh random url-safe DSN public key.
+
+    Unlike an invite token, a DSN public key is NOT a secret and is stored in
+    plaintext: it is a public identifier the SDK embeds in client bundles to
+    say which project an event belongs to (see docs/PROTOCOL.md, the
+    ``X-Crashlens-Key`` header). It is still generated with a CSPRNG so it is
+    unguessable and collision-resistant, but no hashing applies because there is
+    nothing secret to protect.
+    """
+    return secrets.token_urlsafe(32)
