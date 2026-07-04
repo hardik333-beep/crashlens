@@ -413,6 +413,57 @@ async def test_action_on_missing_issue_is_none(app_sessionmaker, two_orgs) -> No
     assert result is None
 
 
+async def test_resolve_after_regression_clears_came_back_marker(
+    app_sessionmaker, superuser_engine, two_orgs
+) -> None:
+    """Resolving a REGRESSED issue clears regressed_in_release in the same UPDATE
+    that records the new fix release (coherent-views governor ruling on W5-02): a
+    resolved issue has, by definition, not come back, so "Fixed in v2" and "Came
+    back in v2" must never show together. The UI badge is gated on the field, so
+    clearing it here is what removes the badge."""
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    # Seed the issue from an event on release web@1.0.0 and resolve it there.
+    env1 = _exc_envelope(str(uuid.uuid4()), func="reresolve")
+    res = await _seed_event(app_sessionmaker, org_a, project_a, env1)
+    issue_id = uuid.UUID(res["issue_id"])
+    first = await issues.set_issue_status(
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+    )
+    assert first is not None and first["resolved_in_release"] == "web@1.0.0"
+
+    # A strictly-newer release ships (deterministic created_at), and an event
+    # from it regresses the issue, recording the came-back release.
+    async with superuser_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO releases (org_id, project_id, version, created_at) "
+                "VALUES (:o, :p, :v, now() + interval '1 hour')"
+            ),
+            {"o": org_a, "p": project_a, "v": "web@2.0.0"},
+        )
+    env2 = _exc_envelope(str(uuid.uuid4()), func="reresolve")
+    env2["release"] = "web@2.0.0"
+    regressed = await _seed_event(app_sessionmaker, org_a, project_a, env2)
+    assert regressed["regressed"] is True
+
+    detail = await issues.get_issue(
+        org_a, project_a, issue_id, session_factory=app_sessionmaker
+    )
+    assert detail is not None
+    assert detail["status"] == "regressed"
+    assert detail["regressed_in_release"] == "web@2.0.0"
+
+    # Re-resolving records the latest release as the fix AND clears the
+    # came-back marker in the same statement.
+    second = await issues.set_issue_status(
+        org_a, project_a, issue_id, "resolve", session_factory=app_sessionmaker
+    )
+    assert second is not None
+    assert second["status"] == "resolved"
+    assert second["resolved_in_release"] == "web@2.0.0"
+    assert second["regressed_in_release"] is None
+
+
 # --- Delete keeps events ------------------------------------------------------
 async def test_delete_issue_removes_issue_but_keeps_events(
     app_sessionmaker, two_orgs

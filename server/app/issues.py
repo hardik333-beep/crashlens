@@ -420,8 +420,10 @@ async def _load_assignee_email(
 # release-tracking bookkeeping (W5-02):
 #   * resolve captures the fix release = the project's LATEST release (MAX
 #     created_at, i.e. the most recently first-seen version), or NULL when the
-#     project has no releases yet. It does NOT clear regressed_in_release (only
-#     reopen/ignore do).
+#     project has no releases yet. It ALSO clears regressed_in_release in the
+#     SAME UPDATE: an issue that is currently resolved has, by definition, not
+#     come back, so the "came back in" marker must never linger next to a fresh
+#     "fixed in" (coherent-views governor ruling on W5-02).
 #   * ignore clears regressed_in_release (the "came back in" badge should not
 #     linger on a muted Issue) but leaves any recorded fix release.
 #   * reopen restores unresolved and clears BOTH release fields (a fresh start).
@@ -430,7 +432,8 @@ async def _load_assignee_email(
 # (never client input), so interpolating it carries no injection risk.
 _ACTION_SET_SQL = {
     "resolve": (
-        "status = 'resolved', resolved_in_release = ("
+        "status = 'resolved', regressed_in_release = NULL, "
+        "resolved_in_release = ("
         "SELECT version FROM releases WHERE project_id = :pid "
         "ORDER BY created_at DESC, version DESC LIMIT 1)"
     ),
@@ -460,7 +463,8 @@ async def set_issue_status(
     Returns the updated issue dict, or None if the project or issue is not
     visible in this org (a 404, not a cross-tenant write). Idempotent: applying
     the status an issue already holds simply rewrites the same values. On
-    ``resolve`` the project's latest release is recorded as the fix release; on
+    ``resolve`` the project's latest release is recorded as the fix release and
+    the came-back-in release is cleared (a resolved issue has not come back); on
     ``reopen``/``ignore`` the came-back-in release is cleared (reopen also clears
     the fix release). RLS scopes the UPDATE to ``org_id`` and it is additionally
     matched on ``project_id`` so an issue reached through the wrong project URL is
