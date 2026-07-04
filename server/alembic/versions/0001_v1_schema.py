@@ -43,12 +43,19 @@ multiple permissive policies are combined with OR and quietly broaden access.
 
 The scope predicate is::
 
-    <tenant_col> = current_setting('app.current_org', true)::uuid
+    <tenant_col> = NULLIF(current_setting('app.current_org', true), '')::uuid
 
-``current_setting(..., true)`` returns NULL when the GUC is unset (missing_ok).
-``<col> = NULL`` evaluates to NULL, which is NOT true, so a session that has not
-set ``app.current_org`` sees zero rows and cannot insert: absence DENIES. This
-is verified by the integration tests, not assumed.
+``current_setting(..., true)`` returns NULL when the GUC was NEVER set
+(missing_ok), but on a POOLED connection that previously ran a transaction-local
+``set_config``, the value reverts at commit to the session value, which for a
+defined-then-reset custom GUC is the EMPTY STRING, not NULL; ``''::uuid`` would
+raise instead of denying. NULLIF folds '' into NULL, so both cases make the
+comparison unknown (NOT true): the session sees zero rows and cannot insert.
+Absence DENIES without erroring. This is verified by the integration tests
+(including a pooled-connection-reuse test), not assumed.
+Edited in place 2026-07-04 (pre-v0.1.0, no production database exists) to add
+the NULLIF wrap after live CI surfaced the empty-string revert on reused pooled
+connections.
 
 RLS is both ENABLEd and FORCEd on every tenant table. FORCE ensures the policy
 binds even the table owner (owners are otherwise exempt unless FORCE is set).
@@ -135,15 +142,17 @@ def _enable_rls(table: str, scope_col: str = "org_id") -> None:
 
     One policy for ALL commands, carrying BOTH USING and WITH CHECK so that
     SELECT/UPDATE/DELETE visibility and INSERT/UPDATE write-eligibility are all
-    governed by the same org predicate. A missing ``app.current_org`` GUC yields
-    NULL and therefore DENIES.
+    governed by the same org predicate. NULLIF folds the empty string (what a
+    pooled connection reports after a transaction-local set_config reverts) into
+    NULL, so both "never set" and "set then reverted" yield NULL and DENY
+    instead of raising an invalid-uuid cast error.
     """
     op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
     op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
     op.execute(
         f"CREATE POLICY tenant_isolation ON {table} "
-        f"USING ({scope_col} = current_setting('app.current_org', true)::uuid) "
-        f"WITH CHECK ({scope_col} = current_setting('app.current_org', true)::uuid)"
+        f"USING ({scope_col} = NULLIF(current_setting('app.current_org', true), '')::uuid) "
+        f"WITH CHECK ({scope_col} = NULLIF(current_setting('app.current_org', true), '')::uuid)"
     )
 
 

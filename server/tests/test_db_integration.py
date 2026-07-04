@@ -236,6 +236,32 @@ async def test_rls_denies_without_org_context(app_sessionmaker, two_orgs) -> Non
                     {"org": two_orgs["org_a"]},
                 )
 
+    # POOLED-CONNECTION REUSE (the live-CI failure mode): after a tenant_session
+    # commits, its transaction-local GUC reverts, but on the REUSED pooled
+    # connection current_setting reports the EMPTY STRING, not NULL. The policy
+    # must treat '' as unset via NULLIF: a plain query on the same pool must
+    # return zero rows WITHOUT raising an invalid-uuid cast error.
+    async with tenant_session(
+        str(two_orgs["org_a"]), session_factory=app_sessionmaker
+    ) as session:
+        assert (
+            await session.execute(text("SELECT count(*) FROM projects"))
+        ).scalar_one() == 1
+
+    async with app_sessionmaker() as session:
+        # Same factory, same pool: sequential checkouts reuse the connection
+        # whose GUC was defined-then-reverted. Prove the revert left ''.
+        guc = (
+            await session.execute(
+                text("SELECT current_setting('app.current_org', true)")
+            )
+        ).scalar()
+        assert guc in ("", None)  # reused connection reports '', fresh one NULL
+        visible = (
+            await session.execute(text("SELECT count(*) FROM projects"))
+        ).scalar_one()  # must NOT raise InvalidTextRepresentationError
+        assert visible == 0
+
 
 @pytest.mark.isolation
 async def test_cross_org_reads_writes_updates_denied(app_sessionmaker, two_orgs) -> None:

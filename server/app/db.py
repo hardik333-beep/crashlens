@@ -14,7 +14,11 @@ COMMIT and ROLLBACK. A value set in one transaction is GONE in the next. So the
 scope MUST be re-applied at the start of EVERY transaction. :func:`tenant_session`
 opens exactly one transaction and applies the scope as its first statement, so a
 fresh scope is guaranteed for every unit of work. Never cache a session across
-transactions expecting the scope to persist.
+transactions expecting the scope to persist. Pooled-connection wrinkle: on a
+REUSED pooled connection the reverted GUC reads back as the EMPTY STRING rather
+than NULL, which is why the RLS policies use
+``NULLIF(current_setting('app.current_org', true), '')::uuid`` so that '' and
+NULL both deny instead of raising an invalid-uuid cast error.
 
 READ-ONLY SYSTEM SESSION (BYPASSRLS bootstrap)
 ----------------------------------------------
