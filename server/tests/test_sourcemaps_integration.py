@@ -247,8 +247,9 @@ async def test_cross_org_admin_cannot_touch_other_project(
     b_admin_h = {"Authorization": f"Bearer {security.create_access_token(b_admin)}"}
     try:
         # Org B's admin, addressing org B in the path but org A's project id,
-        # is refused: project_a is not visible in org B (404), never a
-        # cross-tenant write.
+        # is refused with 404 on ALL THREE verbs: project_a does not belong to
+        # org B, and the ownership check (explicit org predicate, not RLS
+        # visibility alone) runs BEFORE any filesystem write or delete.
         cross = f"/orgs/{org_b}/projects/{project_a}/sourcemaps"
         r = await client.post(
             cross,
@@ -258,8 +259,16 @@ async def test_cross_org_admin_cannot_touch_other_project(
         )
         assert r.status_code == 404
         assert (await client.get(cross, headers=b_admin_h)).status_code == 404
-        # And nothing was written under org A's tree.
+        assert (
+            await client.delete(f"{cross}/web@1.0.0", headers=b_admin_h)
+        ).status_code == 404
+        # And NOTHING was written ANYWHERE on disk -- not under org A's tree,
+        # not under org B's tree keyed by org A's project id (the exact failure
+        # mode CI run 28705817594 caught: 201 + files at {org_b}/{project_a}),
+        # and no leftover .tmp partials anywhere. The maps root stays untouched.
         assert not os.path.exists(os.path.join(maps_dir, str(org_a)))
+        assert not os.path.exists(os.path.join(maps_dir, str(org_b)))
+        assert os.listdir(maps_dir) == []
     finally:
         async with superuser_engine.begin() as conn:
             await conn.execute(

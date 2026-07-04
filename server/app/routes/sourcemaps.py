@@ -6,9 +6,11 @@ POST /api/orgs/{org_id}/projects/{project_id}/sourcemaps from the browser reache
 
 Every handler depends on ``require_org_admin``, so the org id in the path is
 verified against the caller's admin membership BEFORE any filesystem path is
-built. The project id is additionally confirmed to belong to that org (via
-``projects.get_project`` under RLS) so a valid admin of org A cannot seed files
-under a project that is not theirs. Files land at::
+built. The project id is additionally confirmed to belong to that org via
+``_verify_project`` -- a lookup with an EXPLICIT org predicate on the verified
+``ctx.org_id`` (NOT RLS visibility alone; see ``_PROJECT_IN_ORG_SQL``) -- so a
+valid admin of org A cannot seed files under a project that is not theirs, on
+any connection role. Files land at::
 
     {SOURCEMAPS_DIR}/{org_id}/{project_id}/{release_dir}/{basename}
 
@@ -34,10 +36,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
+from sqlalchemy import text
 
-from app import projects, sourcemaps
+from app import sourcemaps
 from app.auth import OrgContext, require_org_admin
 from app.config import get_settings
+from app.db import tenant_session
 
 logger = logging.getLogger(__name__)
 
@@ -67,14 +71,39 @@ _PROJECT_NOT_FOUND = HTTPException(
 )
 
 
+# Ownership check with an EXPLICIT org predicate, deliberately NOT relying on
+# RLS row visibility alone. Source maps live on the FILESYSTEM, which RLS can
+# never protect; the disk path is derived from the verified org id plus the
+# CLIENT-SUPPLIED project id, so this is the single guard standing between a
+# valid admin of org A and a write keyed by org B's project id. A guard for a
+# non-RLS resource must hold regardless of the connection role: on a BYPASSRLS
+# or superuser engine (as CI's app engine is) an RLS-only lookup sees every
+# org's projects and waves the cross-org id through (live CI run 28705817594
+# proved exactly that with a 201). ``:org_id`` is ALWAYS the verified
+# ``ctx.org_id`` from ``require_org_admin``, never client input, and the query
+# still runs inside ``tenant_session`` so RLS ALSO applies on enforcing roles:
+# defense in depth, either mechanism alone denies.
+_PROJECT_IN_ORG_SQL = text(
+    "SELECT 1 FROM projects WHERE id = :project_id AND org_id = :org_id"
+)
+
+
 async def _verify_project(ctx: OrgContext, project_id: uuid.UUID) -> None:
     """Confirm ``project_id`` belongs to the verified org, or raise 404.
 
-    Uses the RLS-scoped ``projects.get_project``: a project in another org is not
-    visible and yields a 404, never a cross-tenant path write.
+    MUST be awaited BEFORE any filesystem path for this project is built,
+    written, or deleted (see the comment on ``_PROJECT_IN_ORG_SQL`` for why the
+    org predicate is explicit here). A project in another org yields a 404 and
+    nothing on disk is touched.
     """
-    project = await projects.get_project(ctx.org_id, project_id)
-    if project is None:
+    async with tenant_session(str(ctx.org_id)) as session:
+        row = (
+            await session.execute(
+                _PROJECT_IN_ORG_SQL,
+                {"project_id": str(project_id), "org_id": str(ctx.org_id)},
+            )
+        ).first()
+    if row is None:
         raise _PROJECT_NOT_FOUND
 
 
