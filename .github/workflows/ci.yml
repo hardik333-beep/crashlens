@@ -190,6 +190,11 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITLEAKS_ENABLE_SUMMARY: "true"
+          # Explicitly point at the repo config (which extends the default rules
+          # and narrowly allowlists the e2e fixture directory). The CLI would
+          # also auto-detect .gitleaks.toml at the scanned root; setting
+          # GITLEAKS_CONFIG removes any ambiguity about detection order.
+          GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
 
   # (e) Cross-tenant isolation gate. HARD-FAILING (no continue-on-error): every
   # test marked ``isolation`` must prove Tenant A cannot read or act on Tenant

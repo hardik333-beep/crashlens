@@ -1,0 +1,22 @@
+# Crashlens gitleaks configuration.
+#
+# Extends the FULL default ruleset (nothing is disabled) and adds exactly one
+# narrow allowlist: the e2e fixture directory. The "credentials" defined there
+# (e.g. STRONG_PASSWORD in dashboard/e2e/fixtures/shared.ts) are throwaway
+# strings the end-to-end suite uses against a disposable docker-compose test
+# stack whose database lives only for the duration of one CI run. They are not,
+# and can never become, real secrets. Everything else in the repository is
+# scanned exactly as before.
+#
+# Picked up by CI two ways (belt and braces): the gitleaks CLI auto-detects a
+# .gitleaks.toml at the scanned repo root, and the gitleaks job in
+# .github/workflows/ci.yml also sets GITLEAKS_CONFIG to this file explicitly.
+
+[extend]
+useDefault = true
+
+# NOTE: [[allowlists]] is the current syntax (gitleaks v8.25.0 replaced the
+# older [allowlist] table); gitleaks-action v2 runs the latest gitleaks release.
+[[allowlists]]
+description = "Throwaway e2e fixture credentials for the disposable CI test stack (never real secrets)"
+paths = ['''^dashboard/e2e/fixtures/''']
