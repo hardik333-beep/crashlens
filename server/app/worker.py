@@ -1,7 +1,7 @@
 """arq worker entrypoint.
 
-Connects to Redis and runs the registered cron jobs (no on-demand job
-functions yet -- those arrive in a later slice). Run it with:
+Connects to Redis, runs the ``process_event`` consumer that fingerprints
+ingested events into Issues, and the partition/retention cron jobs. Run it with:
 
     arq app.worker.WorkerSettings
 """
@@ -13,6 +13,7 @@ from arq.connections import RedisSettings
 from arq.cron import cron
 
 from app.config import get_settings
+from app.jobs.process_event import process_event
 from app.jobs.retention import enforce_retention, maintain_event_partitions
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ class WorkerSettings:
     otherwise defaults ``cron`` evaluation to system time).
     """
 
-    functions: list = []
+    functions: list = [process_event]
     cron_jobs = [
         cron(maintain_event_partitions, hour=0, minute=10),
         cron(enforce_retention, hour=0, minute=30),
@@ -47,3 +48,9 @@ class WorkerSettings:
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
     timezone = datetime.UTC
+    # FLAGGED DEFAULTS (governor review): retry a failed job up to 3 times (a
+    # transient DB/Redis blip should recover; a poison event is already caught
+    # inside process_event so it never reaches these retries), and cap any single
+    # job at 60s so a pathological event cannot pin a worker slot indefinitely.
+    max_tries = 3
+    job_timeout = 60
