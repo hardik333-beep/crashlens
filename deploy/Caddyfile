@@ -8,12 +8,29 @@
 	root * /srv/dashboard
 	encode gzip
 
+	# Source map uploads need a much larger body than the ingest hot path, so
+	# they are matched FIRST (before the generic /api handler below) and given
+	# their own 25MB cap. The application additionally enforces a per-file 20MB
+	# cap while streaming (see app/routes/sourcemaps.py); this edge cap bounds the
+	# whole multipart request. The /api prefix is stripped manually here (this
+	# block uses `handle`, not `handle_path`, because the matcher is a regexp), so
+	# POST /api/orgs/{org}/projects/{project}/sourcemaps reaches the application as
+	# /orgs/{org}/projects/{project}/sourcemaps.
+	@sourcemaps path_regexp ^/api/orgs/[^/]+/projects/[^/]+/sourcemaps(/.*)?$
+	handle @sourcemaps {
+		request_body {
+			max_size 25MB
+		}
+		uri strip_prefix /api
+		reverse_proxy api:8000
+	}
+
 	# API traffic is reverse-proxied to the FastAPI service. handle_path strips
-	# the /api prefix, so /api/health reaches the application as /health.
+	# the /api prefix, so /api/health reaches the application as /health. The
+	# ingest route (and everything else under /api except source map uploads
+	# above) keeps the small 250KB body cap so a large payload is rejected at the
+	# edge before it reaches the application.
 	handle_path /api/* {
-		# Cap the request body on the ingest route. The ingest endpoint is
-		# defined in a later slice; the cap is enforced here at the edge so a
-		# large payload is rejected before it reaches the application.
 		request_body {
 			max_size 250KB
 		}

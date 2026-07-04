@@ -35,6 +35,20 @@ export interface ProjectDetail extends Project {
   keys: DsnKey[];
 }
 
+// One stored source map file within a release (mirrors SourcemapFileOut).
+export interface SourcemapFile {
+  basename: string;
+  size: number;
+  uploaded_at: string;
+}
+
+// A release's uploaded source maps (mirrors SourcemapReleaseOut).
+export interface SourcemapRelease {
+  release: string;
+  file_count: number;
+  files: SourcemapFile[];
+}
+
 export interface Member {
   user_id: string;
   email: string;

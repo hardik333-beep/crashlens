@@ -50,6 +50,8 @@ import re
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app import sourcemaps
+from app.config import get_settings
 from app.db import tenant_session
 
 logger = logging.getLogger(__name__)
@@ -467,6 +469,7 @@ async def process_event(
     dsn_key_id: str,
     received_at: str,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    sourcemaps_dir: str | None = None,
 ) -> dict:
     """Consume one ingested envelope: fingerprint, upsert its Issue, store the event.
 
@@ -491,6 +494,17 @@ async def process_event(
     event_id = envelope.get("event_id") if isinstance(envelope, dict) else None
     try:
         normalized = normalize_envelope(envelope)
+        # SYMBOLICATION (W6-01): for javascript-platform exception events with a
+        # release, rewrite frames through any uploaded source maps BEFORE
+        # fingerprinting, so grouped Issues use original (source) frames. This is
+        # fully defensive and can never fail the event (see symbolicate_envelope).
+        # Documented consequence: an event processed before its map is uploaded
+        # fingerprints on minified frames and groups separately from the same
+        # crash symbolicated -- accepted at v1.
+        maps_dir = sourcemaps_dir if sourcemaps_dir is not None else get_settings().sourcemaps_dir
+        normalized = sourcemaps.symbolicate_envelope(
+            normalized, org_id, project_id, maps_dir
+        )
         fingerprint = compute_fingerprint(normalized)
         title = derive_title(normalized)
         event_id = normalized["event_id"]

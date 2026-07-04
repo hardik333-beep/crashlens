@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     # Non-secret operational settings may carry safe defaults.
     environment: str = "development"
 
+    # Directory where uploaded JavaScript source maps are stored, keyed by
+    # org/project/release. Defaults to the path the compose ``sourcemaps`` volume
+    # is mounted at in both the api and worker containers (see docker-compose.yml).
+    # Read from SOURCEMAPS_DIR (case-insensitive).
+    sourcemaps_dir: str = "/var/lib/crashlens/sourcemaps"
+
     # --- Email alerts (all OPTIONAL) -----------------------------------------
     # Email alerting is off unless BOTH smtp_host and smtp_from are configured.
     # When unset, the alert engine logs a single warning once per process and

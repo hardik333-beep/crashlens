@@ -78,3 +78,36 @@ export async function apiRequest<T>(
   }
   return (await response.json()) as T;
 }
+
+// Multipart upload variant. Sends a FormData body (the browser sets the
+// multipart Content-Type + boundary itself, so we must NOT set it here) with the
+// same Bearer auth and stale-token handling as apiRequest. Used for source map
+// uploads, which cannot be expressed as JSON.
+export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token !== null) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_PREFIX}${path}`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+
+  if (response.status === 401 && token !== null) {
+    clearToken();
+    window.location.assign("/login");
+    throw new ApiError(401, "Your session has ended. Please sign in again.");
+  }
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await extractMessage(response));
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+  return (await response.json()) as T;
+}

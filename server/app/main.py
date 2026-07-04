@@ -13,6 +13,7 @@ from app.routes.ingest import router as ingest_router
 from app.routes.issues import router as issues_router
 from app.routes.orgs import router as orgs_router
 from app.routes.projects import router as projects_router
+from app.routes.sourcemaps import router as sourcemaps_router
 
 
 @asynccontextmanager
@@ -47,6 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth_router)
     app.include_router(orgs_router)
     app.include_router(projects_router)
+    app.include_router(sourcemaps_router)
     app.include_router(issues_router)
     app.include_router(ingest_router)
     app.include_router(alerts_router)

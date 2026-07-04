@@ -108,6 +108,8 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app import sourcemaps
+from app.config import get_settings
 from app.db import events_partition_name, get_sessionmaker, system_session, tenant_session
 
 logger = logging.getLogger(__name__)
@@ -343,6 +345,24 @@ async def enforce_retention(
     # (b) PER-PROJECT TRIM -- secondary, bounded (see module docstring).
     await _trim_over_retention_projects(
         projects_by_org, global_max, session_factory=session_factory
+    )
+
+    # (c) SOURCE MAP PRUNE (W6-01). Uploaded source map release directories are
+    # files on disk, not DB rows, so they are reclaimed here on the SAME global
+    # cutoff: any release directory whose mtime predates the partition-drop
+    # cutoff is older than every project's retention window and safe to remove.
+    # Same logging discipline as the steps above; a per-directory error is
+    # logged and skipped, never fatal.
+    cutoff_dt = datetime.datetime.combine(
+        cutoff, datetime.time.min, tzinfo=datetime.UTC
+    )
+    removed_maps = sourcemaps.prune_expired_release_maps(
+        get_settings().sourcemaps_dir, cutoff_dt
+    )
+    logger.info(
+        "enforce_retention: pruned source map release dirs cutoff=%s count=%d",
+        cutoff,
+        len(removed_maps),
     )
 
 

@@ -1,6 +1,6 @@
 // One typed function per backend endpoint the dashboard uses. Keeps the pages
 // free of URL strings and request shapes.
-import { apiRequest } from "./api";
+import { apiRequest, apiUpload } from "./api";
 import type {
   AcceptInviteResult,
   AlertChannel,
@@ -18,6 +18,7 @@ import type {
   Project,
   ProjectDetail,
   SignupResult,
+  SourcemapRelease,
 } from "./types";
 
 // --- Auth (unauthenticated: handle their own errors, no auto-redirect) -------
@@ -113,6 +114,44 @@ export function revokeKey(
   return apiRequest<void>(
     `/orgs/${orgId}/projects/${projectId}/keys/${keyId}/revoke`,
     { method: "POST" },
+  );
+}
+
+// --- Source maps (admin-only) ------------------------------------------------
+export function listSourcemaps(
+  orgId: string,
+  projectId: string,
+): Promise<SourcemapRelease[]> {
+  return apiRequest<SourcemapRelease[]>(
+    `/orgs/${orgId}/projects/${projectId}/sourcemaps`,
+  );
+}
+
+export function uploadSourcemaps(
+  orgId: string,
+  projectId: string,
+  release: string,
+  files: FileList | File[],
+): Promise<SourcemapRelease> {
+  const form = new FormData();
+  form.append("release", release);
+  for (const file of Array.from(files)) {
+    form.append("files", file, file.name);
+  }
+  return apiUpload<SourcemapRelease>(
+    `/orgs/${orgId}/projects/${projectId}/sourcemaps`,
+    form,
+  );
+}
+
+export function deleteSourcemaps(
+  orgId: string,
+  projectId: string,
+  release: string,
+): Promise<void> {
+  return apiRequest<void>(
+    `/orgs/${orgId}/projects/${projectId}/sourcemaps/${encodeURIComponent(release)}`,
+    { method: "DELETE" },
   );
 }
 
