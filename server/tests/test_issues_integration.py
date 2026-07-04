@@ -43,6 +43,7 @@ from app.config import get_settings
 from app.db import tenant_session
 from app.jobs.process_event import process_event
 from app.main import create_app
+from tests.conftest import ensure_events_partitions
 
 pytestmark = pytest.mark.db
 
@@ -97,6 +98,14 @@ async def app_sessionmaker(superuser_engine):
 @pytest_asyncio.fixture
 async def two_orgs(superuser_engine):
     """Seed two orgs, each with one project. Cleaned up on teardown."""
+    # Provision the events partitions this file's seeds land in (today, plus
+    # tomorrow for a midnight-crossing run). Earlier tests in the same CI
+    # session can drop the deploy-time partition window, so each seeding file
+    # provisions its own (see tests/conftest.py: ensure_events_partitions).
+    today = datetime.date.today()
+    await ensure_events_partitions(
+        superuser_engine, [today, today + datetime.timedelta(days=1)]
+    )
     org_a, org_b = uuid.uuid4(), uuid.uuid4()
     project_a, project_b = uuid.uuid4(), uuid.uuid4()
     async with superuser_engine.begin() as conn:
