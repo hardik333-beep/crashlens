@@ -117,7 +117,16 @@ as static files, and reverse-proxies API traffic.
 
 ## Screenshots
 
-<!-- Screenshots of the issue list, issue detail, and project settings pages go here. -->
+A full click-through tour, from signup to admin, is in
+[docs/screenshots.md](docs/screenshots.md). Every image there is captured by the
+end-to-end test suite on each run and committed back to the repository, so it is
+always the real product. A few highlights:
+
+![The list of grouped errors](docs/images/05-issues-list.png)
+
+![An error with its stack trace, trail, tags and activity chart](docs/images/06-issue-detail.png)
+
+![The instance overview with its stat tiles](docs/images/10-admin-overview.png)
 
 ## Repository layout
 
