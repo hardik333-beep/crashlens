@@ -1,7 +1,7 @@
 # Crashlens
 
-Open source, self-hosted error monitoring for teams who want a Sentry-style
-error tracker running on their own infrastructure.
+Open source, self-hosted Sentry alternative for teams who want their error
+monitoring running on their own infrastructure.
 
 Crashlens is a self hosted error monitoring and error tracking platform: add
 one of the tiny client SDKs to your app, and unhandled exceptions are
