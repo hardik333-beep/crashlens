@@ -3,6 +3,8 @@
 import { apiRequest } from "./api";
 import type {
   AcceptInviteResult,
+  AlertChannel,
+  AlertChannelType,
   AuthResult,
   CreateInviteResult,
   DsnKey,
@@ -205,6 +207,46 @@ export function addIssueComment(
     `/orgs/${orgId}/projects/${projectId}/issues/${issueId}/comments`,
     { method: "POST", body: { body } },
   );
+}
+
+// --- Alert channels ----------------------------------------------------------
+export function listAlertChannels(orgId: string): Promise<AlertChannel[]> {
+  return apiRequest<AlertChannel[]>(`/orgs/${orgId}/alert-channels`);
+}
+
+export function createAlertChannel(
+  orgId: string,
+  type: AlertChannelType,
+  config: Record<string, unknown>,
+  projectId: string | null,
+): Promise<AlertChannel> {
+  return apiRequest<AlertChannel>(`/orgs/${orgId}/alert-channels`, {
+    method: "POST",
+    body: { type, config, project_id: projectId },
+  });
+}
+
+export function updateAlertChannel(
+  orgId: string,
+  channelId: string,
+  changes: { enabled?: boolean; config?: Record<string, unknown> },
+): Promise<AlertChannel> {
+  return apiRequest<AlertChannel>(
+    `/orgs/${orgId}/alert-channels/${channelId}`,
+    {
+      method: "PATCH",
+      body: changes,
+    },
+  );
+}
+
+export function deleteAlertChannel(
+  orgId: string,
+  channelId: string,
+): Promise<void> {
+  return apiRequest<void>(`/orgs/${orgId}/alert-channels/${channelId}`, {
+    method: "DELETE",
+  });
 }
 
 // --- Members -----------------------------------------------------------------

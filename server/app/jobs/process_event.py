@@ -477,6 +477,38 @@ async def process_event(
         row.status,
         row.event_count,
     )
+
+    # ALERT DISPATCH (post-commit, off the transaction). Only a genuinely NEW
+    # Issue or a resolved->regressed TRANSITION is worth alerting on; duplicate
+    # and poison paths returned earlier and never reach here. The enqueue is done
+    # AFTER the transaction above committed (never inside it, so a slow/unavailable
+    # Redis can never hold a DB transaction open or roll back a stored event), via
+    # the arq redis pool arq injects into a job's ctx as ctx["redis"] (grounded in
+    # arq.worker: self.ctx['redis'] = self.pool). Tests call process_event with a
+    # bare ctx and no redis, so a missing pool simply means "no dispatch". A blip
+    # enqueuing is logged and swallowed, NOT raised: re-raising would fail the job
+    # and arq's retry would re-run process_event, hit the duplicate guard, and
+    # return WITHOUT dispatching -- silently losing the alert. FLAGGED for governor
+    # review: at-most-once alert delivery (a dropped enqueue loses that one alert).
+    if created or regressed:
+        pool = ctx.get("redis") if isinstance(ctx, dict) else None
+        if pool is not None:
+            try:
+                await pool.enqueue_job(
+                    "dispatch_alerts",
+                    org_id=org_id,
+                    project_id=project_id,
+                    issue_id=str(issue_id),
+                    kind="regression" if regressed else "new",
+                    title=title,
+                    level=level,
+                )
+            except Exception:  # noqa: BLE001 - a dispatch enqueue blip must not fail a stored event
+                logger.warning(
+                    "process_event: failed to enqueue dispatch_alerts issue_id=%s",
+                    issue_id,
+                )
+
     return {
         "status": row.status,
         "event_id": event_id,

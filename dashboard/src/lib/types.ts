@@ -38,6 +38,21 @@ export interface Member {
   role: string;
 }
 
+// --- Alert channels ----------------------------------------------------------
+export type AlertChannelType = "email" | "slack" | "webhook";
+
+export interface AlertChannel {
+  id: string;
+  type: AlertChannelType;
+  project_id: string | null;
+  enabled: boolean;
+  // A display-safe summary of the destination. The full Slack/webhook URL is
+  // never returned by the API (it can embed a token), so channels are edited by
+  // replacing the URL, never by reading it back.
+  target: string;
+  created_at: string;
+}
+
 // --- Issues (errors) ---------------------------------------------------------
 export interface IssueListItem {
   id: string;

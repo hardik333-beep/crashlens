@@ -18,7 +18,7 @@ export class ApiError extends Error {
 }
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "DELETE";
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   body?: unknown;
   // Whether to attach the session token. Sign-in, sign-up, and invite
   // acceptance run BEFORE a session exists, so they set this false and handle

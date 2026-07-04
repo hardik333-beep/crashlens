@@ -9,10 +9,12 @@ ingested events into Issues, and the partition/retention cron jobs. Run it with:
 import datetime
 import logging
 
+from arq import func
 from arq.connections import RedisSettings
 from arq.cron import cron
 
 from app.config import get_settings
+from app.jobs.alerts import dispatch_alerts
 from app.jobs.process_event import process_event
 from app.jobs.retention import enforce_retention, maintain_event_partitions
 
@@ -39,7 +41,12 @@ class WorkerSettings:
     otherwise defaults ``cron`` evaluation to system time).
     """
 
-    functions: list = [process_event]
+    # dispatch_alerts is wrapped with a lower max_tries: an alert fan-out that
+    # partially failed should retry a bounded number of times (per-channel
+    # isolation already prevents one bad channel from failing the whole job), not
+    # re-notify every channel repeatedly on the default 3-try budget. FLAGGED
+    # DEFAULT (governor review): max_tries=2 for dispatch_alerts.
+    functions: list = [process_event, func(dispatch_alerts, max_tries=2)]
     cron_jobs = [
         cron(maintain_event_partitions, hour=0, minute=10),
         cron(enforce_retention, hour=0, minute=30),
