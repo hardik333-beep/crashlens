@@ -659,3 +659,46 @@ select:focus {
   margin: 4px 0 0;
   font-size: 0.9rem;
 }
+
+/* --- Assignee ---------------------------------------------------------- */
+.assignee-field {
+  max-width: 320px;
+}
+
+/* --- Comments --------------------------------------------------------- */
+textarea,
+.textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  background: var(--surface);
+  color: var(--text);
+  resize: vertical;
+}
+
+textarea:focus,
+.textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.comment-form {
+  max-width: 560px;
+}
+
+.comment-card {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.comment-body-block {
+  width: 100%;
+  gap: 4px;
+}
+
+.comment-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

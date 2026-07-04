@@ -1,18 +1,28 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ChangeEvent, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { LevelBadge, StatusBadge } from "../components/LevelBadge";
 import { OccurrenceChart } from "../components/OccurrenceChart";
 import { OrgNav } from "../components/OrgNav";
 import { EmptyState, ErrorView, LoadingView } from "../components/StateViews";
+import { ApiError } from "../lib/api";
 import {
   actOnIssue,
+  addIssueComment,
+  assignIssue,
   deleteIssue,
   fetchIssue,
+  listIssueComments,
+  listMembers,
   type IssueAction,
 } from "../lib/endpoints";
 import { formatDateTime, formatRelative } from "../lib/format";
-import type { Breadcrumb, ExceptionNode, StackFrame } from "../lib/types";
+import type {
+  Breadcrumb,
+  ExceptionNode,
+  IssueComment,
+  StackFrame,
+} from "../lib/types";
 import { useAsyncData } from "../lib/useAsyncData";
 import { useOrgRole } from "../lib/useOrg";
 
@@ -27,8 +37,22 @@ export function IssueDetailPage() {
   );
   const reload = issue.reload;
 
+  const members = useAsyncData(() => listMembers(orgId), [orgId]);
+  const comments = useAsyncData(
+    () => listIssueComments(orgId, projectId, issueId),
+    [orgId, projectId, issueId],
+  );
+  const reloadComments = comments.reload;
+
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  const [assigning, setAssigning] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+
+  const [commentBody, setCommentBody] = useState("");
+  const [posting, setPosting] = useState(false);
+  const [commentError, setCommentError] = useState<string | null>(null);
 
   const onAction = useCallback(
     async (action: IssueAction) => {
@@ -63,6 +87,58 @@ export function IssueDetailPage() {
       setBusy(false);
     }
   }, [orgId, projectId, issueId]);
+
+  const onAssign = useCallback(
+    async (event: ChangeEvent<HTMLSelectElement>) => {
+      const value = event.target.value;
+      setAssignError(null);
+      setAssigning(true);
+      try {
+        await assignIssue(
+          orgId,
+          projectId,
+          issueId,
+          value === "" ? null : value,
+        );
+        reload();
+      } catch (err: unknown) {
+        setAssignError(
+          err instanceof ApiError
+            ? err.message
+            : "Could not update the assignee. Please try again.",
+        );
+      } finally {
+        setAssigning(false);
+      }
+    },
+    [orgId, projectId, issueId, reload],
+  );
+
+  const onAddComment = useCallback(
+    async (event: FormEvent) => {
+      event.preventDefault();
+      const trimmed = commentBody.trim();
+      if (trimmed === "") {
+        return;
+      }
+      setCommentError(null);
+      setPosting(true);
+      try {
+        await addIssueComment(orgId, projectId, issueId, trimmed);
+        setCommentBody("");
+        reloadComments();
+      } catch (err: unknown) {
+        setCommentError(
+          err instanceof ApiError
+            ? err.message
+            : "Could not add the comment. Please try again.",
+        );
+      } finally {
+        setPosting(false);
+      }
+    },
+    [orgId, projectId, issueId, commentBody, reloadComments],
+  );
 
   const backLink = `/org/${orgId}/projects/${projectId}/issues`;
 
@@ -157,6 +233,39 @@ export function IssueDetailPage() {
 
       {actionError !== null && <ErrorView message={actionError} />}
 
+      <label className="field assignee-field">
+        <span>Assigned to</span>
+        <select
+          value={detail.assigned_to ?? ""}
+          onChange={(e) => void onAssign(e)}
+          disabled={assigning || members.state.kind !== "success"}
+        >
+          <option value="">Unassigned</option>
+          {members.state.kind === "success" &&
+            members.state.data.map((member) => (
+              <option key={member.user_id} value={member.user_id}>
+                {member.email}
+              </option>
+            ))}
+          {/* If the assignee is no longer in this org's member list, still show
+              their email so the control never silently misrepresents who the
+              error is assigned to. */}
+          {detail.assigned_to !== null &&
+            members.state.kind === "success" &&
+            !members.state.data.some(
+              (m) => m.user_id === detail.assigned_to,
+            ) && (
+              <option value={detail.assigned_to}>
+                {detail.assigned_to_email ?? detail.assigned_to}
+              </option>
+            )}
+        </select>
+      </label>
+      {members.state.kind === "error" && (
+        <ErrorView message="Could not load team members." />
+      )}
+      {assignError !== null && <ErrorView message={assignError} />}
+
       <OccurrenceChart occurrences={detail.occurrences} />
 
       {detail.latest_event !== null && (
@@ -221,6 +330,51 @@ export function IssueDetailPage() {
             ))}
           </ul>
         )}
+      </div>
+
+      <div className="stack">
+        <h2>Comments</h2>
+        {comments.state.kind === "loading" && <LoadingView />}
+        {comments.state.kind === "error" && (
+          <ErrorView message={comments.state.message} />
+        )}
+        {comments.state.kind === "success" &&
+          (comments.state.data.length === 0 ? (
+            <EmptyState title="No comments yet." />
+          ) : (
+            <ul className="card-list">
+              {comments.state.data.map((comment) => (
+                <CommentRow key={comment.id} comment={comment} />
+              ))}
+            </ul>
+          ))}
+
+        <form
+          onSubmit={(e) => void onAddComment(e)}
+          className="stack comment-form"
+        >
+          <label className="field">
+            <span>Add a comment</span>
+            <textarea
+              className="textarea"
+              rows={3}
+              maxLength={5000}
+              value={commentBody}
+              onChange={(e) => setCommentBody(e.target.value)}
+              placeholder="Add notes for your team about this error..."
+            />
+          </label>
+          <div className="row">
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={posting || commentBody.trim() === ""}
+            >
+              {posting ? "Adding..." : "Add comment"}
+            </button>
+          </div>
+        </form>
+        {commentError !== null && <ErrorView message={commentError} />}
       </div>
     </section>
   );
@@ -303,5 +457,24 @@ function Breadcrumbs({ crumbs }: { crumbs: Breadcrumb[] }) {
         </li>
       ))}
     </ol>
+  );
+}
+
+// A single comment: author email, relative age, and body. Comments arrive
+// oldest-first from the API, so rendering them in order reads top-to-bottom
+// like a chat thread with the newest note at the bottom.
+function CommentRow({ comment }: { comment: IssueComment }) {
+  return (
+    <li className="card comment-card">
+      <div className="stack comment-body-block">
+        <div className="row-between">
+          <span className="card-title">
+            {comment.author_email ?? "A former team member"}
+          </span>
+          <span className="muted">{formatRelative(comment.created_at)}</span>
+        </div>
+        <p className="comment-text">{comment.body}</p>
+      </div>
+    </li>
   );
 }

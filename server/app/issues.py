@@ -1,4 +1,4 @@
-"""Issue services: list, detail, status actions, and delete.
+"""Issue services: list, detail, status actions, delete, assignment, comments.
 
 Route handlers in ``app/routes/issues.py`` stay thin and call into these
 functions. Like ``app/projects.py`` every function accepts an optional
@@ -35,7 +35,21 @@ and expire naturally via the partition-retention job. ``issue_comments`` (FK wit
 ON DELETE CASCADE) are removed by the database as a side effect.
 
 SECRETS / PII HYGIENE: this module logs nothing. It returns stored event payloads
-to the authorized caller but never logs them.
+to the authorized caller but never logs them. Comment bodies and member emails
+are likewise never logged; only ids ever reach a log line.
+
+ASSIGNMENT (member action): ``assign_issue`` sets ``issues.assigned_to`` to a
+user id or None (unassign). The candidate user id MUST be a member of the SAME
+org -- verified via ``org_memberships`` inside the same ``tenant_session`` the
+UPDATE runs in, never trusted from the client -- so an issue can never be
+assigned to an outsider. The route answers 400 (not 404/403) for a non-member
+candidate, since the ISSUE itself was found; it is the assignee that is invalid.
+
+COMMENTS (member action): ``issue_comments`` has an FK CASCADE to ``issues``
+(migration 0001), so deleting an issue removes its comments; no extra cleanup is
+needed here. ``add_comment`` stamps ``author`` from the verified session user
+(never client input). Newest-last ordering (``created_at ASC, id ASC``) matches a
+chat-style thread read top-to-bottom.
 """
 
 import datetime
@@ -46,7 +60,16 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app import accounts
 from app.db import tenant_session
+
+# --- FLAGGED DEFAULTS (governor review) ---------------------------------------
+# The comment body length cap. 5000 chars comfortably fits a stack trace snippet
+# or a paragraph of triage notes without becoming an unbounded blob; chosen per
+# the brief's "1..5000 chars" instruction rather than measured against real
+# usage (no prior Crashlens comment data exists yet).
+COMMENT_BODY_MIN_LENGTH = 1
+COMMENT_BODY_MAX_LENGTH = 5000
 
 # --- FLAGGED DEFAULTS (governor review) ---------------------------------------
 # The status a filter tab may request. "all" means "no status predicate".
@@ -133,6 +156,21 @@ def zero_fill_occurrences(
         }
         for offset in range(days)
     ]
+
+
+def validate_comment_body(body: str) -> str:
+    """Return the trimmed comment body, or raise ``ValueError`` if invalid.
+
+    Enforces the ``[COMMENT_BODY_MIN_LENGTH, COMMENT_BODY_MAX_LENGTH]`` char
+    bound on the TRIMMED body, so whitespace-only input is rejected as empty.
+    """
+    trimmed = body.strip()
+    if len(trimmed) < COMMENT_BODY_MIN_LENGTH or len(trimmed) > COMMENT_BODY_MAX_LENGTH:
+        raise ValueError(
+            "Comment must be between "
+            f"{COMMENT_BODY_MIN_LENGTH} and {COMMENT_BODY_MAX_LENGTH} characters."
+        )
+    return trimmed
 
 
 def _coerce_payload(value: Any) -> Any:
@@ -344,7 +382,28 @@ async def get_issue(
     ]
     counts_by_day = {r.day: int(r.c) for r in occ_rows}
     detail["occurrences"] = zero_fill_occurrences(counts_by_day, today)
+    detail["assigned_to_email"] = await _load_assignee_email(
+        detail["assigned_to"], session_factory=session_factory
+    )
     return detail
+
+
+async def _load_assignee_email(
+    assigned_to: str | None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> str | None:
+    """Return the assignee's email, or None if unassigned. Same discipline as
+    ``projects.list_members``: emails live on the RLS-exempt ``users`` table and
+    are attached via ``accounts.load_users_by_ids`` after the org-scoped read.
+    """
+    if assigned_to is None:
+        return None
+    assignee_id = uuid.UUID(assigned_to)
+    emails = await accounts.load_users_by_ids(
+        [assignee_id], session_factory=session_factory
+    )
+    return emails.get(assignee_id)
 
 
 # The three action verbs map to a target status. Reopen restores ``unresolved``
@@ -391,6 +450,165 @@ async def set_issue_status(
     if row is None:
         return None
     return _issue_dict(row)
+
+
+# --- Assignment (member) -------------------------------------------------------
+class InvalidAssigneeError(ValueError):
+    """Raised when ``user_id`` passed to ``assign_issue`` is not an org member.
+
+    The route maps this to 400 (the ISSUE was found; the candidate assignee was
+    not), distinct from the 404 a missing project/issue produces.
+    """
+
+
+async def assign_issue(
+    org_id: uuid.UUID,
+    project_id: uuid.UUID,
+    issue_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> dict | None:
+    """Assign (or unassign, ``user_id=None``) an issue and return its detail.
+
+    Returns None if the project or issue is not visible in this org (a 404).
+    Raises ``InvalidAssigneeError`` if ``user_id`` is not a member of ``org_id``
+    -- membership is verified against ``org_memberships`` INSIDE the same
+    ``tenant_session`` the UPDATE runs in, so an issue can never be assigned to
+    an outsider even under a race.
+    """
+    async with tenant_session(str(org_id), session_factory=session_factory) as session:
+        if await _load_project_row(session, project_id) is None:
+            return None
+        if user_id is not None:
+            is_member = (
+                await session.execute(
+                    text(
+                        "SELECT 1 FROM org_memberships WHERE user_id = :uid"
+                    ),
+                    {"uid": str(user_id)},
+                )
+            ).one_or_none()
+            if is_member is None:
+                raise InvalidAssigneeError(
+                    "The assignee must be a member of this organization."
+                )
+        row = (
+            await session.execute(
+                text(
+                    "UPDATE issues SET assigned_to = :assignee "
+                    "WHERE id = :iid AND project_id = :pid "
+                    "RETURNING id"
+                ),
+                {
+                    "assignee": str(user_id) if user_id is not None else None,
+                    "iid": str(issue_id),
+                    "pid": str(project_id),
+                },
+            )
+        ).one_or_none()
+    if row is None:
+        return None
+    return await get_issue(
+        org_id, project_id, issue_id, session_factory=session_factory
+    )
+
+
+# --- Comments (member) ----------------------------------------------------------
+def _comment_dict(row: object, email: str | None) -> dict:
+    return {
+        "id": str(row.id),  # type: ignore[attr-defined]
+        "author_id": str(row.author),  # type: ignore[attr-defined]
+        "author_email": email,
+        "body": row.body,  # type: ignore[attr-defined]
+        "created_at": row.created_at.isoformat(),  # type: ignore[attr-defined]
+    }
+
+
+async def list_comments(
+    org_id: uuid.UUID,
+    project_id: uuid.UUID,
+    issue_id: uuid.UUID,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> list[dict] | None:
+    """Return the issue's comments oldest-first (chronological), or None if the
+    project or issue is not visible in this org (a 404).
+    """
+    async with tenant_session(str(org_id), session_factory=session_factory) as session:
+        if await _load_project_row(session, project_id) is None:
+            return None
+        issue_row = (
+            await session.execute(
+                text("SELECT id FROM issues WHERE id = :iid AND project_id = :pid"),
+                {"iid": str(issue_id), "pid": str(project_id)},
+            )
+        ).one_or_none()
+        if issue_row is None:
+            return None
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT id, author, body, created_at FROM issue_comments "
+                    "WHERE issue_id = :iid ORDER BY created_at ASC, id ASC"
+                ),
+                {"iid": str(issue_id)},
+            )
+        ).all()
+    author_ids = [row.author for row in rows]
+    emails = await accounts.load_users_by_ids(
+        author_ids, session_factory=session_factory
+    )
+    return [_comment_dict(row, emails.get(row.author)) for row in rows]
+
+
+async def add_comment(
+    org_id: uuid.UUID,
+    project_id: uuid.UUID,
+    issue_id: uuid.UUID,
+    author_id: uuid.UUID,
+    body: str,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> dict | None:
+    """Create a comment authored by ``author_id`` (the verified session user).
+
+    ``body`` MUST already be validated by ``validate_comment_body``. Returns the
+    created comment, or None if the project or issue is not visible in this org
+    (a 404).
+    """
+    comment_id = uuid.uuid4()
+    async with tenant_session(str(org_id), session_factory=session_factory) as session:
+        if await _load_project_row(session, project_id) is None:
+            return None
+        issue_row = (
+            await session.execute(
+                text("SELECT id FROM issues WHERE id = :iid AND project_id = :pid"),
+                {"iid": str(issue_id), "pid": str(project_id)},
+            )
+        ).one_or_none()
+        if issue_row is None:
+            return None
+        row = (
+            await session.execute(
+                text(
+                    "INSERT INTO issue_comments (id, org_id, issue_id, author, body) "
+                    "VALUES (:id, :oid, :iid, :author, :body) "
+                    "RETURNING id, author, body, created_at"
+                ),
+                {
+                    "id": str(comment_id),
+                    "oid": str(org_id),
+                    "iid": str(issue_id),
+                    "author": str(author_id),
+                    "body": body,
+                },
+            )
+        ).one()
+    emails = await accounts.load_users_by_ids(
+        [author_id], session_factory=session_factory
+    )
+    return _comment_dict(row, emails.get(author_id))
 
 
 async def delete_issue(

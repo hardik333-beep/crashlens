@@ -1,8 +1,9 @@
 """Unit tests for the pure logic in the issues slice (no database).
 
 Covers occurrence zero-fill, the list-parameter validators (status filter, sort,
-page, per_page clamping), and the unauthenticated short circuits on the issue
-endpoints that reject before any database access is required.
+page, per_page clamping), the comment body-length validator, and the
+unauthenticated short circuits on the issue endpoints that reject before any
+database access is required.
 """
 
 import datetime
@@ -119,6 +120,36 @@ def test_coerce_payload_returns_undecodable_string_unchanged() -> None:
     assert issues._coerce_payload("not json") == "not json"
 
 
+# --- Comment body-length validation --------------------------------------------
+def test_comment_body_accepts_minimum_length() -> None:
+    assert issues.validate_comment_body("a") == "a"
+
+
+def test_comment_body_accepts_maximum_length() -> None:
+    body = "a" * issues.COMMENT_BODY_MAX_LENGTH
+    assert issues.validate_comment_body(body) == body
+
+
+def test_comment_body_rejects_empty() -> None:
+    with pytest.raises(ValueError):
+        issues.validate_comment_body("")
+
+
+def test_comment_body_rejects_whitespace_only() -> None:
+    # Trimmed length is what is checked, so whitespace-only is rejected as empty.
+    with pytest.raises(ValueError):
+        issues.validate_comment_body("   \n\t  ")
+
+
+def test_comment_body_rejects_over_maximum() -> None:
+    with pytest.raises(ValueError):
+        issues.validate_comment_body("a" * (issues.COMMENT_BODY_MAX_LENGTH + 1))
+
+
+def test_comment_body_trims_surrounding_whitespace() -> None:
+    assert issues.validate_comment_body("  hello world  ") == "hello world"
+
+
 # --- Unauthenticated access short circuits before the database ----------------
 async def test_list_issues_without_token_is_401() -> None:
     app = create_app()
@@ -156,5 +187,37 @@ async def test_delete_issue_without_token_is_401() -> None:
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.delete(
             f"/orgs/{uuid.uuid4()}/projects/{uuid.uuid4()}/issues/{uuid.uuid4()}"
+        )
+    assert response.status_code == 401
+
+
+async def test_assign_issue_without_token_is_401() -> None:
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/orgs/{uuid.uuid4()}/projects/{uuid.uuid4()}/issues/{uuid.uuid4()}/assign",
+            json={"user_id": None},
+        )
+    assert response.status_code == 401
+
+
+async def test_list_comments_without_token_is_401() -> None:
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/orgs/{uuid.uuid4()}/projects/{uuid.uuid4()}/issues/{uuid.uuid4()}/comments"
+        )
+    assert response.status_code == 401
+
+
+async def test_create_comment_without_token_is_401() -> None:
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/orgs/{uuid.uuid4()}/projects/{uuid.uuid4()}/issues/{uuid.uuid4()}/comments",
+            json={"body": "hello"},
         )
     assert response.status_code == 401

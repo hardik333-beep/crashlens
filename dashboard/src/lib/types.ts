@@ -119,6 +119,15 @@ export interface IssueDetail extends IssueListItem {
   latest_event: LatestEvent | null;
   recent_events: RecentEvent[];
   occurrences: OccurrenceDay[];
+  assigned_to_email: string | null;
+}
+
+export interface IssueComment {
+  id: string;
+  author_id: string;
+  author_email: string | null;
+  body: string;
+  created_at: string;
 }
 
 export type IssueStatusFilter =

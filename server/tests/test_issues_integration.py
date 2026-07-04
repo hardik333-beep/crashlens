@@ -17,7 +17,13 @@ have the exact shape production produces. The tests then prove:
 * the status action transitions (resolve, ignore, reopen from any state) are
   idempotent;
 * admin-only delete removes the issue but leaves its events;
-* cross-org isolation (org B cannot see or act on org A's issues).
+* assignment (member) requires the candidate to be an org member (400
+  otherwise), supports unassigning, and refreshes the ``assigned_to_email``
+  field;
+* comments (member) are listed oldest-first and created with the caller as
+  author;
+* cross-org isolation (org B cannot see or act on org A's issues, including
+  assignment and comments).
 
 An HTTP-level authZ matrix proves member-vs-admin-vs-outsider access on every
 endpoint.
@@ -444,6 +450,158 @@ async def test_delete_issue_removes_issue_but_keeps_events(
     assert event_left == 1
 
 
+# --- Assignment (member) -------------------------------------------------------
+async def test_assign_issue_to_member_sets_assignee_and_email(
+    app_sessionmaker, superuser_engine, two_orgs
+) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    res = await _seed_event(
+        app_sessionmaker, org_a, project_a, _exc_envelope(str(uuid.uuid4()), func="assignee")
+    )
+    issue_id = uuid.UUID(res["issue_id"])
+
+    member_id, member_email = uuid.uuid4(), f"assignee-{uuid.uuid4()}@example.test"
+    async with superuser_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO users (id, email, password_hash) "
+                "VALUES (:id, :email, :ph)"
+            ),
+            {"id": member_id, "email": member_email, "ph": security.hash_password(_KNOWN_PASSWORD)},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO org_memberships (org_id, user_id, role) "
+                "VALUES (:o, :u, 'member')"
+            ),
+            {"o": org_a, "u": member_id},
+        )
+    try:
+        detail = await issues.assign_issue(
+            org_a, project_a, issue_id, member_id, session_factory=app_sessionmaker
+        )
+        assert detail is not None
+        assert detail["assigned_to"] == str(member_id)
+        assert detail["assigned_to_email"] == member_email
+
+        # Unassign: assigned_to and assigned_to_email both go back to None.
+        unassigned = await issues.assign_issue(
+            org_a, project_a, issue_id, None, session_factory=app_sessionmaker
+        )
+        assert unassigned is not None
+        assert unassigned["assigned_to"] is None
+        assert unassigned["assigned_to_email"] is None
+    finally:
+        async with superuser_engine.begin() as conn:
+            await conn.execute(text("DELETE FROM users WHERE id = :id"), {"id": member_id})
+
+
+async def test_assign_issue_to_non_member_is_invalid(
+    app_sessionmaker, superuser_engine, two_orgs
+) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    res = await _seed_event(
+        app_sessionmaker, org_a, project_a, _exc_envelope(str(uuid.uuid4()), func="nonmember")
+    )
+    issue_id = uuid.UUID(res["issue_id"])
+
+    outsider_id = uuid.uuid4()
+    async with superuser_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO users (id, email, password_hash) "
+                "VALUES (:id, :email, :ph)"
+            ),
+            {
+                "id": outsider_id,
+                "email": f"nonmember-{uuid.uuid4()}@example.test",
+                "ph": security.hash_password(_KNOWN_PASSWORD),
+            },
+        )
+    try:
+        with pytest.raises(issues.InvalidAssigneeError):
+            await issues.assign_issue(
+                org_a, project_a, issue_id, outsider_id, session_factory=app_sessionmaker
+            )
+        # The failed attempt did not change the assignee.
+        detail = await issues.get_issue(
+            org_a, project_a, issue_id, session_factory=app_sessionmaker
+        )
+        assert detail is not None
+        assert detail["assigned_to"] is None
+    finally:
+        async with superuser_engine.begin() as conn:
+            await conn.execute(text("DELETE FROM users WHERE id = :id"), {"id": outsider_id})
+
+
+async def test_assign_missing_issue_is_none(app_sessionmaker, two_orgs) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    result = await issues.assign_issue(
+        org_a, project_a, uuid.uuid4(), None, session_factory=app_sessionmaker
+    )
+    assert result is None
+
+
+# --- Comments (member) ----------------------------------------------------------
+async def test_comments_create_and_list_chronological(
+    app_sessionmaker, superuser_engine, two_orgs
+) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    res = await _seed_event(
+        app_sessionmaker, org_a, project_a, _exc_envelope(str(uuid.uuid4()), func="comment")
+    )
+    issue_id = uuid.UUID(res["issue_id"])
+
+    author_id, author_email = uuid.uuid4(), f"commenter-{uuid.uuid4()}@example.test"
+    async with superuser_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO users (id, email, password_hash) "
+                "VALUES (:id, :email, :ph)"
+            ),
+            {"id": author_id, "email": author_email, "ph": security.hash_password(_KNOWN_PASSWORD)},
+        )
+    try:
+        first = await issues.add_comment(
+            org_a, project_a, issue_id, author_id, "First note",
+            session_factory=app_sessionmaker,
+        )
+        second = await issues.add_comment(
+            org_a, project_a, issue_id, author_id, "Second note",
+            session_factory=app_sessionmaker,
+        )
+        assert first is not None and second is not None
+        assert first["author_email"] == author_email
+        assert first["body"] == "First note"
+
+        listed = await issues.list_comments(
+            org_a, project_a, issue_id, session_factory=app_sessionmaker
+        )
+        assert listed is not None
+        assert [c["body"] for c in listed] == ["First note", "Second note"]
+        assert all(c["author_email"] == author_email for c in listed)
+    finally:
+        async with superuser_engine.begin() as conn:
+            await conn.execute(text("DELETE FROM users WHERE id = :id"), {"id": author_id})
+
+
+async def test_list_comments_missing_issue_is_none(app_sessionmaker, two_orgs) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    result = await issues.list_comments(
+        org_a, project_a, uuid.uuid4(), session_factory=app_sessionmaker
+    )
+    assert result is None
+
+
+async def test_add_comment_missing_issue_is_none(app_sessionmaker, two_orgs) -> None:
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    result = await issues.add_comment(
+        org_a, project_a, uuid.uuid4(), uuid.uuid4(), "hello",
+        session_factory=app_sessionmaker,
+    )
+    assert result is None
+
+
 # --- Cross-org isolation ------------------------------------------------------
 @pytest.mark.isolation
 async def test_cross_org_issue_isolation(app_sessionmaker, two_orgs) -> None:
@@ -476,6 +634,26 @@ async def test_cross_org_issue_isolation(app_sessionmaker, two_orgs) -> None:
             org_b, project_a, issue_id, session_factory=app_sessionmaker
         )
         is False
+    )
+    # Org B cannot assign or comment on org A's issue either.
+    assert (
+        await issues.assign_issue(
+            org_b, project_a, issue_id, None, session_factory=app_sessionmaker
+        )
+        is None
+    )
+    assert (
+        await issues.list_comments(
+            org_b, project_a, issue_id, session_factory=app_sessionmaker
+        )
+        is None
+    )
+    assert (
+        await issues.add_comment(
+            org_b, project_a, issue_id, uuid.uuid4(), "cross-org note",
+            session_factory=app_sessionmaker,
+        )
+        is None
     )
 
     # Org A still sees its issue intact and unresolved (org B's calls changed
@@ -551,6 +729,34 @@ async def test_issue_endpoints_enforce_member_and_admin_authz(
         assert (
             await client.post(f"{detail_url}/reopen", headers=member_h)
         ).status_code == 200
+        # Member can assign (to themselves) and comment.
+        assign_resp = await client.post(
+            f"{detail_url}/assign", json={"user_id": str(member_id)}, headers=member_h
+        )
+        assert assign_resp.status_code == 200
+        assert assign_resp.json()["assigned_to_email"] == member_email
+        # Assigning to a non-member is a 400.
+        assert (
+            await client.post(
+                f"{detail_url}/assign",
+                json={"user_id": str(outsider_id)},
+                headers=member_h,
+            )
+        ).status_code == 400
+        comment_resp = await client.post(
+            f"{detail_url}/comments", json={"body": "Looking into this."}, headers=member_h
+        )
+        assert comment_resp.status_code == 201
+        assert comment_resp.json()["author_email"] == member_email
+        assert (
+            await client.get(f"{detail_url}/comments", headers=member_h)
+        ).status_code == 200
+        # Empty comment body is a 400.
+        assert (
+            await client.post(
+                f"{detail_url}/comments", json={"body": "   "}, headers=member_h
+            )
+        ).status_code == 400
         # Member cannot delete (admin only).
         assert (await client.delete(detail_url, headers=member_h)).status_code == 403
         # Outsider is refused everywhere.
@@ -558,6 +764,19 @@ async def test_issue_endpoints_enforce_member_and_admin_authz(
         assert (await client.get(detail_url, headers=outsider_h)).status_code == 403
         assert (
             await client.post(f"{detail_url}/ignore", headers=outsider_h)
+        ).status_code == 403
+        assert (
+            await client.post(
+                f"{detail_url}/assign", json={"user_id": None}, headers=outsider_h
+            )
+        ).status_code == 403
+        assert (
+            await client.get(f"{detail_url}/comments", headers=outsider_h)
+        ).status_code == 403
+        assert (
+            await client.post(
+                f"{detail_url}/comments", json={"body": "sneaky"}, headers=outsider_h
+            )
         ).status_code == 403
         assert (await client.delete(detail_url, headers=outsider_h)).status_code == 403
         # Admin deletes.

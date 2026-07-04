@@ -6,6 +6,7 @@ import type {
   AuthResult,
   CreateInviteResult,
   DsnKey,
+  IssueComment,
   IssueDetail,
   IssueListResult,
   IssueSort,
@@ -169,6 +170,40 @@ export function deleteIssue(
   return apiRequest<void>(
     `/orgs/${orgId}/projects/${projectId}/issues/${issueId}`,
     { method: "DELETE" },
+  );
+}
+
+export function assignIssue(
+  orgId: string,
+  projectId: string,
+  issueId: string,
+  userId: string | null,
+): Promise<IssueDetail> {
+  return apiRequest<IssueDetail>(
+    `/orgs/${orgId}/projects/${projectId}/issues/${issueId}/assign`,
+    { method: "POST", body: { user_id: userId } },
+  );
+}
+
+export function listIssueComments(
+  orgId: string,
+  projectId: string,
+  issueId: string,
+): Promise<IssueComment[]> {
+  return apiRequest<IssueComment[]>(
+    `/orgs/${orgId}/projects/${projectId}/issues/${issueId}/comments`,
+  );
+}
+
+export function addIssueComment(
+  orgId: string,
+  projectId: string,
+  issueId: string,
+  body: string,
+): Promise<IssueComment> {
+  return apiRequest<IssueComment>(
+    `/orgs/${orgId}/projects/${projectId}/issues/${issueId}/comments`,
+    { method: "POST", body: { body } },
   );
 }
 
