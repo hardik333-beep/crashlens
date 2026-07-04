@@ -1,0 +1,149 @@
+[
+  {
+    "event_id": "11111111-1111-4111-8111-111111111111",
+    "timestamp": "2026-07-04T12:00:00.000Z",
+    "platform": "python",
+    "level": "error",
+    "message": "Division by zero while totalling an invoice",
+    "environment": "production",
+    "sdk": { "name": "crashlens-python", "version": "0.1.0" },
+    "exception": {
+      "type": "ZeroDivisionError",
+      "value": "division by zero",
+      "stacktrace": {
+        "frames": [
+          {
+            "filename": "app/billing/invoice.py",
+            "function": "build_invoice",
+            "lineno": 88,
+            "colno": 5,
+            "context_line": "    total = compute_total(lines)",
+            "in_app": true
+          },
+          {
+            "filename": "app/billing/invoice.py",
+            "function": "compute_total",
+            "lineno": 42,
+            "colno": 12,
+            "context_line": "    return subtotal / count",
+            "in_app": true
+          }
+        ]
+      }
+    },
+    "tags": { "server_name": "web-1", "transaction": "POST /invoices" }
+  },
+  {
+    "event_id": "22222222-2222-4222-8222-222222222222",
+    "timestamp": "2026-07-04T12:01:00.000Z",
+    "platform": "python",
+    "level": "error",
+    "message": "Missing customer id on the checkout payload",
+    "environment": "production",
+    "sdk": { "name": "crashlens-python", "version": "0.1.0" },
+    "exception": {
+      "type": "KeyError",
+      "value": "'customer_id'",
+      "stacktrace": {
+        "frames": [
+          {
+            "filename": "app/checkout/session.py",
+            "function": "start_checkout",
+            "lineno": 31,
+            "colno": 9,
+            "context_line": "    customer = payload[\"customer_id\"]",
+            "in_app": true
+          }
+        ]
+      }
+    },
+    "tags": { "server_name": "web-2", "transaction": "POST /checkout" }
+  },
+  {
+    "event_id": "33333333-3333-4333-8333-333333333333",
+    "timestamp": "2026-07-04T12:02:00.000Z",
+    "platform": "python",
+    "level": "warning",
+    "message": "Unexpected None passed to the currency formatter",
+    "environment": "production",
+    "release": "web@2.1.0",
+    "sdk": { "name": "crashlens-python", "version": "0.1.0" },
+    "exception": {
+      "type": "TypeError",
+      "value": "unsupported format string passed to NoneType.__format__",
+      "stacktrace": {
+        "frames": [
+          {
+            "filename": "app/money/format.py",
+            "function": "format_amount",
+            "lineno": 17,
+            "colno": 4,
+            "context_line": "    return f\"{amount:.2f}\"",
+            "in_app": true
+          }
+        ]
+      }
+    },
+    "breadcrumbs": [
+      {
+        "timestamp": "2026-07-04T12:01:58.100Z",
+        "type": "navigation",
+        "category": "http",
+        "level": "info",
+        "message": "GET /invoices/17",
+        "data": {}
+      },
+      {
+        "timestamp": "2026-07-04T12:01:59.400Z",
+        "type": "query",
+        "category": "db",
+        "level": "info",
+        "message": "SELECT amount FROM invoices WHERE id = 17",
+        "data": {}
+      }
+    ],
+    "tags": { "server_name": "web-1", "transaction": "GET /invoices/17" }
+  },
+  {
+    "event_id": "44444444-4444-4444-8444-444444444444",
+    "timestamp": "2026-07-04T12:03:00.000Z",
+    "platform": "python",
+    "level": "fatal",
+    "message": "Payment provider connection refused",
+    "environment": "production",
+    "sdk": { "name": "crashlens-python", "version": "0.1.0" },
+    "exception": {
+      "type": "ConnectionError",
+      "value": "Failed to reach the payment provider",
+      "stacktrace": {
+        "frames": [
+          {
+            "filename": "app/payments/gateway.py",
+            "function": "charge",
+            "lineno": 54,
+            "colno": 8,
+            "context_line": "    response = client.post(url, json=body)",
+            "in_app": true
+          }
+        ]
+      },
+      "cause": {
+        "type": "TimeoutError",
+        "value": "socket timed out after 5s",
+        "stacktrace": {
+          "frames": [
+            {
+              "filename": "app/http/client.py",
+              "function": "post",
+              "lineno": 120,
+              "colno": 6,
+              "context_line": "    return self._session.send(request, timeout=self.timeout)",
+              "in_app": true
+            }
+          ]
+        }
+      }
+    },
+    "tags": { "server_name": "web-3", "transaction": "POST /pay" }
+  }
+]

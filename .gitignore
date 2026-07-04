@@ -25,6 +25,10 @@ playwright-report/
 test-results/
 /blob-report/
 .playwright/
+# The e2e auth state holds a live session token (generated per run); never commit.
+dashboard/e2e/.auth/
+# Screenshots are generated at test time and land in docs/images via CI, not here.
+dashboard/e2e/screenshots/*.png
 
 # Internal orchestration state, never published
 memory-bank/

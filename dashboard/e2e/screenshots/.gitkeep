@@ -1,0 +1,2 @@
+# Generated Playwright screenshots land here at test time.
+# The PNGs are gitignored; CI copies them into docs/images/ and commits them.
