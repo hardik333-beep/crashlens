@@ -6,6 +6,9 @@ limiter keyed before auth would see only the client IP and let a single abusive
 key hide behind rotating IPs, or let many honest clients behind one NAT starve
 each other; see the ``ratelimit-key-before-auth`` rule).
 
+The limiter gates ALL body processing: it runs before the request body is even
+read, so gzip decompression and JSON parsing never happen for a throttled key.
+
 ATOMICITY: the bucket state (token count + last-refill timestamp) lives in one
 Redis hash mutated by a single Lua script. The whole read-refill-decide-write
 cycle therefore runs atomically on the Redis server, so two concurrent ingest

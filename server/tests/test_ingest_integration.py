@@ -13,10 +13,13 @@ than run. The skip is driven by the redis reachability probe below.
 
 Coverage: happy-path 202 with the job landing in the arq queue, 401 for an
 unknown and a revoked key, 403 for a project mismatch, 413 for an oversize body,
-and 429 with a Retry-After header once the bucket is exhausted.
+429 with a Retry-After header once the bucket is exhausted (proving the body is
+never consumed on the throttled path), and that an invalid-envelope request
+still consumes a token (the limiter gates all body processing).
 """
 
 import json
+import time
 import uuid
 
 import pytest
@@ -28,6 +31,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app import ingest as ingest_module
 from app import ratelimit, security
 from app.config import get_settings
 from app.main import create_app
@@ -284,9 +288,19 @@ async def test_invalid_envelope_400(superuser_engine, redis_client, client) -> N
             await conn.execute(text("DELETE FROM orgs WHERE id = :id"), {"id": org_id})
 
 
-async def test_rate_limit_429_with_retry_after(
-    superuser_engine, redis_client, client
+async def test_rate_limit_429_with_retry_after_and_body_never_processed(
+    superuser_engine, redis_client, client, monkeypatch
 ) -> None:
+    """A throttled request is rejected BEFORE its body is read or decompressed.
+
+    The limiter now runs immediately after DSN auth, so on the 429 path neither
+    the gzip decompressor nor the JSON parser may ever be invoked. Both are
+    wrapped with recording spies (the route calls them as module attributes, so
+    patching ``app.ingest`` intercepts the real calls); a gzip body is sent so a
+    regression to the old order would trip the decompressor spy.
+    """
+    import gzip
+
     async with superuser_engine.begin() as conn:
         org_id = await _seed_org(conn, "RateCo")
         project_id = await _seed_project(conn, org_id, "web")
@@ -294,19 +308,71 @@ async def test_rate_limit_429_with_retry_after(
     try:
         # Pre-drain the bucket for this DSN key to zero tokens, timestamped now,
         # so the very next request is denied without needing 121 real requests.
-        import time
-
         bucket_key = f"{ratelimit.KEY_PREFIX}{key_id}"
         await redis_client.hset(bucket_key, mapping={"tokens": "0", "ts": str(time.time())})
 
+        calls: list[str] = []
+        real_decompress = ingest_module.decompress_gzip
+        real_parse = ingest_module.parse_json
+
+        def spy_decompress(data: bytes) -> bytes:
+            calls.append("decompress_gzip")
+            return real_decompress(data)
+
+        def spy_parse(body: bytes) -> dict:
+            calls.append("parse_json")
+            return real_parse(body)
+
+        monkeypatch.setattr(ingest_module, "decompress_gzip", spy_decompress)
+        monkeypatch.setattr(ingest_module, "parse_json", spy_parse)
+
         resp = await client.post(
             f"/ingest/{project_id}/",
-            headers={"X-Crashlens-Key": public_key},
-            content=json.dumps(_valid_envelope()),
+            headers={
+                "X-Crashlens-Key": public_key,
+                "Content-Encoding": "gzip",
+            },
+            content=gzip.compress(json.dumps(_valid_envelope()).encode()),
         )
         assert resp.status_code == 429
         assert "retry-after" in {k.lower() for k in resp.headers}
         assert int(resp.headers["retry-after"]) >= 1
+        # The throttled request never reached body processing.
+        assert calls == []
+    finally:
+        async with superuser_engine.begin() as conn:
+            await conn.execute(text("DELETE FROM orgs WHERE id = :id"), {"id": org_id})
+
+
+async def test_invalid_envelope_still_consumes_a_token(
+    superuser_engine, redis_client, client
+) -> None:
+    """The limiter gates all body processing: even a 400 spends a token.
+
+    A fresh key's bucket starts at capacity; after one invalid-envelope request
+    the stored token count must be one below capacity (small tolerance only for
+    sub-second refill accrued between the eval and this read).
+    """
+    async with superuser_engine.begin() as conn:
+        org_id = await _seed_org(conn, "TokenSpendCo")
+        project_id = await _seed_project(conn, org_id, "web")
+        key_id, public_key = await _seed_key(conn, org_id, project_id)
+    try:
+        envelope = _valid_envelope()
+        del envelope["level"]  # required field missing -> 400
+        resp = await client.post(
+            f"/ingest/{project_id}/",
+            headers={"X-Crashlens-Key": public_key},
+            content=json.dumps(envelope),
+        )
+        assert resp.status_code == 400
+
+        bucket_key = f"{ratelimit.KEY_PREFIX}{key_id}"
+        tokens_raw = await redis_client.hget(bucket_key, "tokens")
+        assert tokens_raw is not None, "bucket was never touched: no token consumed"
+        tokens = float(tokens_raw)
+        # One token spent from a full bucket, allowing a moment of refill.
+        assert ratelimit.BUCKET_CAPACITY - 1 <= tokens < ratelimit.BUCKET_CAPACITY
     finally:
         async with superuser_engine.begin() as conn:
             await conn.execute(text("DELETE FROM orgs WHERE id = :id"), {"id": org_id})

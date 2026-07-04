@@ -9,9 +9,14 @@ protected by a session JWT: it authenticates with the DSN public key in the
 The handler does the minimum on the hot path and defers everything expensive:
 
 1. Authenticate the DSN key (``system_session`` lookup); reject 401/403.
-2. Read the body, decompressing gzip under a HARD incremental 1 MB cap (413).
-3. Parse and shape-validate the envelope (400, generic body).
-4. Rate-limit per DSN key via a Redis token bucket (429 + Retry-After).
+2. Rate-limit per DSN key via a Redis token bucket (429 + Retry-After),
+   BEFORE the body is read. Every authenticated request consumes a token
+   whether or not its payload is valid, so a client cannot burn server CPU
+   (gzip decompression up to 1 MB, JSON parse) on an unthrottled path by
+   sending deliberately invalid payloads; a 429 is decided before the body is
+   even read.
+3. Read the body, decompressing gzip under a HARD incremental 1 MB cap (413).
+4. Parse and shape-validate the envelope (400, generic body).
 5. Enqueue the raw validated envelope plus server-derived routing metadata to
    the arq ``process_event`` job and return 202 immediately.
 
@@ -124,7 +129,21 @@ async def ingest_event(project_id: uuid.UUID, request: Request) -> Response:
     if str(record.project_id) != str(project_id):
         return _reject(project_id, "project_mismatch", status.HTTP_403_FORBIDDEN)
 
-    # 2. Read the body, decompressing gzip under the incremental 1 MB cap.
+    # 2. Rate-limit per DSN key (AFTER auth, BEFORE the body is read), atomically
+    # in Redis. The token is spent whether or not the payload turns out to be
+    # valid, so invalid payloads cannot burn decompression/parse CPU unthrottled.
+    pool = await get_ingest_pool(request.app)
+    decision = await check_rate_limit(pool, record.id, time.time())
+    if not decision.allowed:
+        return _reject(
+            project_id,
+            "rate_limited",
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            size=None,
+            headers={"Retry-After": str(decision.retry_after)},
+        )
+
+    # 3. Read the body, decompressing gzip under the incremental 1 MB cap.
     body = await request.body()
     wire_size = len(body)
     encoding = request.headers.get("content-encoding", "").lower()
@@ -152,7 +171,7 @@ async def ingest_event(project_id: uuid.UUID, request: Request) -> Response:
             size=wire_size,
         )
 
-    # 3. Parse and shape-validate. Any failure is a generic 400.
+    # 4. Parse and shape-validate. Any failure is a generic 400.
     try:
         envelope = ingest.parse_json(body)
         ingest.validate_envelope(envelope)
@@ -163,18 +182,6 @@ async def ingest_event(project_id: uuid.UUID, request: Request) -> Response:
     except ingest.InvalidEnvelope:
         return _reject(
             project_id, "invalid_envelope", status.HTTP_400_BAD_REQUEST, size=len(body)
-        )
-
-    # 4. Rate-limit per DSN key (AFTER auth), atomically in Redis.
-    pool = await get_ingest_pool(request.app)
-    decision = await check_rate_limit(pool, record.id, time.time())
-    if not decision.allowed:
-        return _reject(
-            project_id,
-            "rate_limited",
-            status.HTTP_429_TOO_MANY_REQUESTS,
-            size=len(body),
-            headers={"Retry-After": str(decision.retry_after)},
         )
 
     # 5. Enqueue for async processing and return 202 immediately. Server-derived
