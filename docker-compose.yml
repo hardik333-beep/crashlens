@@ -1,0 +1,103 @@
+# Crashlens self-host stack. Bring the whole system up with: docker compose up
+# Configuration comes from a local .env file (copy .env.example first).
+#
+# Service overview:
+#   caddy    - TLS termination, serves the built dashboard, reverse-proxies /api,
+#              and enforces the request body cap on the future ingest route.
+#   dashboard - one-shot build that publishes the compiled dashboard into a
+#               shared volume for caddy to serve, then exits.
+#   api      - FastAPI application served by uvicorn.
+#   worker   - arq background consumer (no jobs registered yet).
+#   postgres - primary datastore (events land here in a later slice).
+#   redis    - job queue and per-DSN rate limiting.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+      dashboard:
+        condition: service_completed_successfully
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - dashboard_dist:/srv/dashboard:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: deploy/dashboard.Dockerfile
+    # Copies the compiled static assets into the shared volume, then exits.
+    command: ["sh", "-c", "rm -rf /srv/dashboard/* && cp -r /app/dist/. /srv/dashboard/"]
+    volumes:
+      - dashboard_dist:/srv/dashboard
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - sourcemaps:/var/lib/crashlens/sourcemaps
+    expose:
+      - "8000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/worker.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - sourcemaps:/var/lib/crashlens/sourcemaps
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pg_data:
+  sourcemaps:
+  dashboard_dist:
+  caddy_data:
+  caddy_config:

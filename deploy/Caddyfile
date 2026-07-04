@@ -1,0 +1,29 @@
+# Crashlens reverse proxy.
+#
+# Set CRASHLENS_SITE_ADDRESS in your environment to your public hostname (for
+# example crashlens.example.com) to get automatic HTTPS. It defaults to :80 for
+# local development, which serves plain HTTP.
+{$CRASHLENS_SITE_ADDRESS::80} {
+	# Serve the compiled dashboard as static files.
+	root * /srv/dashboard
+	encode gzip
+
+	# API traffic is reverse-proxied to the FastAPI service. handle_path strips
+	# the /api prefix, so /api/health reaches the application as /health.
+	handle_path /api/* {
+		# Cap the request body on the ingest route. The ingest endpoint is
+		# defined in a later slice; the cap is enforced here at the edge so a
+		# large payload is rejected before it reaches the application.
+		request_body {
+			max_size 250KB
+		}
+		reverse_proxy api:8000
+	}
+
+	# Everything else is the single-page dashboard. Unknown paths fall back to
+	# index.html so client-side routing works.
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
+}

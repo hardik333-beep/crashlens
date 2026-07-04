@@ -1,0 +1,167 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # (a) Linters and type checks: ruff (Python), eslint + tsc (dashboard).
+  lint:
+    name: lint and typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install server package
+        working-directory: server
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: ruff
+        working-directory: server
+        run: ruff check .
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dashboard deps
+        working-directory: dashboard
+        run: npm ci
+
+      - name: eslint
+        working-directory: dashboard
+        run: npm run lint
+
+      - name: tsc --noEmit
+        working-directory: dashboard
+        run: npm run typecheck
+
+  # (b) Python tests. The smoke test does not require a live database or Redis.
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install server package
+        working-directory: server
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        working-directory: server
+        env:
+          DATABASE_URL: postgresql+asyncpg://crashlens:crashlens@localhost:5432/crashlens
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: ci-test-secret-not-a-real-key
+        run: pytest -q
+
+  # (c) Migrations must be reversible: upgrade to head then downgrade to base
+  # against a throwaway Postgres service container.
+  migrations:
+    name: alembic upgrade and downgrade
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: crashlens
+          POSTGRES_PASSWORD: crashlens
+          POSTGRES_DB: crashlens
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crashlens -d crashlens"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install server package
+        working-directory: server
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Upgrade to head then downgrade to base
+        working-directory: server
+        env:
+          DATABASE_URL: postgresql+asyncpg://crashlens:crashlens@localhost:5432/crashlens
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: ci-migration-secret-not-a-real-key
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+
+  # (d) Secret scan over the full history.
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_SUMMARY: "true"
+
+  # (e) Placeholder for the cross-tenant isolation test. It is intentionally
+  # PENDING: the step reports a TODO and fails soft so the gap is visible in CI
+  # without blocking the build. This becomes a required, hard-failing job when
+  # the isolation test lands (tracked as W1-04).
+  cross-tenant-isolation:
+    name: cross-tenant isolation (PENDING)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pending isolation test
+        continue-on-error: true
+        run: |
+          echo "::warning::TODO(W1-04): cross-tenant isolation test not implemented yet."
+          echo "This job must become a hard gate (Tenant A cannot read Tenant B, expect 403/empty)."
+          exit 1
+
+  # (f) Dashboard production build.
+  dashboard-build:
+    name: dashboard build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install dashboard deps
+        working-directory: dashboard
+        run: npm ci
+      - name: Build
+        working-directory: dashboard
+        run: npm run build
