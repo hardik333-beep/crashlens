@@ -60,6 +60,19 @@ services:
       - sourcemaps:/var/lib/crashlens/sourcemaps
     expose:
       - "8000"
+    # Readiness probe so `docker compose up --wait` blocks until uvicorn is
+    # actually serving (the /health route answers 200 as soon as the app is up).
+    # Uses the image's own Python; no curl is installed in the slim image.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   worker:
     build:

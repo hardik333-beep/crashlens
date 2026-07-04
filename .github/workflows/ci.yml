@@ -295,3 +295,192 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/work" -w /work caddy:2-alpine \
             caddy validate --config deploy/Caddyfile --adapter caddyfile
+
+  # (h) End-to-end: stand the FULL docker-compose stack up (caddy + api + worker
+  # + postgres + redis) and run the Playwright click suite WITH screenshot
+  # capture, plus the Python / Node / browser SDK end-to-end proofs, against it.
+  # This is the one job that boots the real stack; the runner has Docker +
+  # compose preinstalled. On a green push to main it commits the refreshed UI
+  # screenshots back into docs/images/ (guarded with [skip ci] against a loop).
+  e2e:
+    name: e2e stack and screenshots
+    runs-on: ubuntu-latest
+    # contents: write is used ONLY by the screenshot commit-back step at the end;
+    # every other step is read-only. Job-level perms override the workflow-level
+    # contents: read for this job alone.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      # Generate every secret fresh in-job; the .env is NEVER committed. The
+      # values are throwaway and live only for this run.
+      - name: Write a CI .env with generated (non-placeholder) values
+        run: |
+          set -euo pipefail
+          APP_PW="app_$(openssl rand -hex 12)"
+          SU_PW="su_$(openssl rand -hex 12)"
+          SECRET="$(openssl rand -hex 32)"
+          cat > .env <<EOF
+          DATABASE_URL=postgresql+asyncpg://crashlens_login:${APP_PW}@postgres:5432/crashlens
+          CRASHLENS_DB_APP_PASSWORD=${APP_PW}
+          POSTGRES_USER=crashlens
+          POSTGRES_PASSWORD=${SU_PW}
+          POSTGRES_DB=crashlens
+          MIGRATIONS_DATABASE_URL=postgresql+asyncpg://crashlens:${SU_PW}@postgres:5432/crashlens
+          REDIS_URL=redis://redis:6379/0
+          SECRET_KEY=${SECRET}
+          ENVIRONMENT=development
+          SMTP_HOST=
+          SMTP_PORT=587
+          SMTP_USERNAME=
+          SMTP_PASSWORD=
+          SMTP_FROM=alerts@example.com
+          SMTP_STARTTLS=true
+          PUBLIC_BASE_URL=
+          EOF
+          echo "wrote .env (values generated in-job, never committed)"
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Apply migrations (as the schema-owning superuser)
+        run: |
+          set -a; . ./.env; set +a
+          docker compose run --rm -e DATABASE_URL="${MIGRATIONS_DATABASE_URL}" api alembic upgrade head
+
+      - name: Bring the stack up and wait for health
+        run: docker compose up -d --wait --wait-timeout 180
+
+      - name: Wait for the edge to serve the API
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost/api/health >/dev/null; then
+              echo "edge is serving /api/health"; exit 0
+            fi
+            sleep 2
+          done
+          echo "edge did not become ready in time"
+          docker compose ps
+          docker compose logs --tail=120
+          exit 1
+
+      - name: Install dashboard deps
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Build the browser SDK (its iife bundle is loaded by the browser e2e test)
+        working-directory: sdks/browser
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Playwright chromium
+        working-directory: dashboard
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the Playwright click suite (captures every screenshot)
+        working-directory: dashboard
+        run: npm run test:e2e
+
+      # A fresh account + project + key for the SDK proofs. The Playwright setup
+      # already claimed the instance-admin (first user); this is a later,
+      # non-admin account, which is all the SDK proofs need.
+      - name: Provision an account, project and key for the SDK proofs
+        id: sdkprov
+        run: |
+          set -euo pipefail
+          BASE=http://localhost/api
+          EMAIL="sdk-e2e-$(date +%s)@example.com"
+          PW="Crashlens-E2E-Verify-8842"
+          SIGNUP=$(curl -fsS -X POST "$BASE/auth/signup" -H 'content-type: application/json' \
+            -d "{\"email\":\"$EMAIL\",\"password\":\"$PW\",\"org_name\":\"SDK Proofs\"}")
+          TOKEN=$(printf '%s' "$SIGNUP" | python -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+          ORG=$(printf '%s' "$SIGNUP" | python -c 'import sys,json;print(json.load(sys.stdin)["org"]["id"])')
+          PROJECT=$(curl -fsS -X POST "$BASE/orgs/$ORG/projects" \
+            -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            -d '{"name":"SDK proofs","platform":null}' \
+            | python -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+          KEY=$(curl -fsS -X POST "$BASE/orgs/$ORG/projects/$PROJECT/keys" \
+            -H "authorization: Bearer $TOKEN" \
+            | python -c 'import sys,json;print(json.load(sys.stdin)["public_key"])')
+          {
+            echo "api_base=$BASE"
+            echo "token=$TOKEN"
+            echo "org=$ORG"
+            echo "project=$PROJECT"
+            echo "dsn=http://$KEY@localhost/api/ingest/$PROJECT/"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Python SDK end-to-end proof
+        env:
+          CRASHLENS_DSN: ${{ steps.sdkprov.outputs.dsn }}
+          CRASHLENS_API_BASE: ${{ steps.sdkprov.outputs.api_base }}
+          CRASHLENS_TOKEN: ${{ steps.sdkprov.outputs.token }}
+          CRASHLENS_ORG_ID: ${{ steps.sdkprov.outputs.org }}
+          CRASHLENS_PROJECT_ID: ${{ steps.sdkprov.outputs.project }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e sdks/python
+          python sdks/python/e2e/run_e2e.py
+
+      - name: Node SDK end-to-end proof
+        working-directory: sdks/node
+        env:
+          CRASHLENS_DSN: ${{ steps.sdkprov.outputs.dsn }}
+          CRASHLENS_API_BASE: ${{ steps.sdkprov.outputs.api_base }}
+          CRASHLENS_TOKEN: ${{ steps.sdkprov.outputs.token }}
+          CRASHLENS_ORG_ID: ${{ steps.sdkprov.outputs.org }}
+          CRASHLENS_PROJECT_ID: ${{ steps.sdkprov.outputs.project }}
+        run: |
+          npm ci
+          npm run build
+          node e2e/run_e2e.mjs
+
+      - name: Upload screenshots and Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            dashboard/e2e/screenshots/
+            dashboard/playwright-report/
+          if-no-files-found: warn
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose logs --tail=200
+
+      # Commit the refreshed screenshots back ONLY on a green push to main. A
+      # normal step here runs only if every prior step succeeded, so a failed
+      # suite never reaches this. [skip ci] stops the push from re-triggering CI.
+      - name: Commit refreshed screenshots back to the repo
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          set -euo pipefail
+          mkdir -p docs/images
+          cp dashboard/e2e/screenshots/*.png docs/images/ 2>/dev/null || true
+          if [ -z "$(git status --porcelain docs/images)" ]; then
+            echo "no screenshot changes to commit"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/images
+          git commit -m "docs: refresh UI screenshots [skip ci]"
+          git push
+
+      - name: Tear the stack down
+        if: always()
+        run: docker compose down -v
