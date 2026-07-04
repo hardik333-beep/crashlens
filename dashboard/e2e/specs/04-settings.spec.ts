@@ -25,10 +25,17 @@ test("add a webhook alert and view the activity log", async ({ page }) => {
     .fill("https://example.com/hooks/crashlens");
   await page.getByRole("button", { name: /^Add alert$/ }).click();
 
-  // The new channel appears as a card titled by its type.
-  await expect(
-    page.getByText("Send to a webhook", { exact: true }).first(),
-  ).toBeVisible();
+  // The new channel appears as a card in the channel list. Assert on the LIST
+  // ROW (li.card with its p.card-title type label), never on bare page text:
+  // "Send to a webhook" also exists as an <option> inside the collapsed type
+  // select above, and Playwright treats options in a closed select as hidden,
+  // so a page-wide text match can resolve to a never-visible node. The row also
+  // shows the masked destination (scheme + host only, see alerts.mask_target).
+  const channelCard = page.locator("li.card").filter({
+    has: page.locator("p.card-title", { hasText: "Send to a webhook" }),
+  });
+  await expect(channelCard).toBeVisible();
+  await expect(channelCard).toContainText("https://example.com");
 
   // The activity section records the sensitive actions taken so far (project,
   // key, invite and channel creation all write audit rows).
