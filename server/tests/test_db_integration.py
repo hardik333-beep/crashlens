@@ -468,22 +468,49 @@ async def test_plain_session_does_not_inherit_bypass(app_sessionmaker, two_orgs)
 
 
 async def test_partition_functions_create_and_drop(superuser_engine) -> None:
-    # Use a far-future date to avoid colliding with the migration's partitions.
+    # Exercise the drop with an ANCIENT sentinel partition so the cutoff
+    # (1900-01-02) can never touch the live today..+7 window that later db
+    # tests insert into. (A prior version used a far-future cutoff, which
+    # dropped EVERY live partition and poisoned all subsequent event inserts.)
     async with superuser_engine.begin() as conn:
-        await conn.execute(text("SELECT create_events_partition(DATE '2999-01-01')"))
+        await conn.execute(text("SELECT create_events_partition(DATE '1900-01-01')"))
         exists = (
             await conn.execute(
-                text("SELECT to_regclass('public.events_29990101') IS NOT NULL")
+                text("SELECT to_regclass('public.events_19000101') IS NOT NULL")
             )
         ).scalar_one()
         assert exists is True
 
         await conn.execute(
-            text("SELECT drop_events_partitions_before(DATE '2999-01-02')")
+            text("SELECT drop_events_partitions_before(DATE '1900-01-02')")
         )
         gone = (
             await conn.execute(
-                text("SELECT to_regclass('public.events_29990101') IS NULL")
+                text("SELECT to_regclass('public.events_19000101') IS NULL")
             )
         ).scalar_one()
         assert gone is True
+
+        # The live window survived: today's partition is still attached to
+        # events (name computed from the DATABASE's CURRENT_DATE so a client
+        # timezone mismatch cannot produce a false pass/fail).
+        today_alive = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_inherits i "
+                    "JOIN pg_class c ON c.oid = i.inhrelid "
+                    "JOIN pg_class p ON p.oid = i.inhparent "
+                    "WHERE p.relname = 'events' "
+                    "AND c.relname = 'events_' || to_char(CURRENT_DATE, 'YYYYMMDD')"
+                )
+            )
+        ).scalar_one()
+        assert today_alive == 1
+
+        # Belt and braces: re-ensure the deploy-time today..+7 window
+        # (idempotent), so even a future edit of this test cannot poison
+        # neighboring tests.
+        for offset in range(8):
+            await conn.execute(
+                text(f"SELECT create_events_partition((CURRENT_DATE + {offset})::date)")
+            )
