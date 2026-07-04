@@ -46,7 +46,7 @@ crashlens.init(
     "https://KEY@host/api/ingest/PROJECT/",
     environment="production",         # shown on every event
     release="web@1.4.2",              # release identifier
-    in_app_module_prefixes=["myapp"], # mark these modules as your code
+    in_app_module_prefixes=["myapp"], # when set, ONLY matching modules count as your code (path checks are skipped)
     max_queue=100,                    # in-memory buffer size
     timeout=2.0,                      # per-request network timeout (seconds)
     install_excepthooks=True,         # capture unhandled exceptions

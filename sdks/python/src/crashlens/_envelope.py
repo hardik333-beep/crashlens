@@ -8,9 +8,12 @@ module implements:
 * the chained-exception ``cause`` field follows ``__cause__`` (explicit
   ``raise ... from ...``) preferring it over ``__context__`` (implicit chaining),
   to a maximum depth of 5;
-* ``in_app`` is true when a frame's file is NOT under the standard library or an
-  installed-packages directory (and, when ``in_app_module_prefixes`` is given,
-  when the frame's module also matches one of those prefixes);
+* ``in_app``: when ``in_app_module_prefixes`` is provided, the prefix match
+  ALONE decides (a frame is in_app iff its module matches a prefix; the path
+  heuristic is ignored entirely, so an app pip-installed into site-packages,
+  for example inside a container, still gets in_app=True on its own frames).
+  When no prefixes are provided, a frame is in_app when its file is NOT under
+  the standard library or an installed-packages directory;
 * source context (``context_line`` plus up to 5 lines of ``pre_context`` /
   ``post_context``) is read from ``linecache``.
 """
@@ -56,25 +59,29 @@ def _is_in_app(
     module: Optional[str],
     prefixes: Optional[Sequence[str]],
 ) -> bool:
-    """Return True when a frame belongs to the application, not a library."""
-    if not filename:
-        library = False
-    else:
-        try:
-            fn = os.path.normcase(os.path.realpath(filename))
-        except OSError:
-            fn = os.path.normcase(filename)
-        library = (
-            "site-packages" in fn
-            or "dist-packages" in fn
-            or any(fn.startswith(p) for p in _LIBRARY_PATHS)
-        )
-    in_app = not library
+    """Return True when a frame belongs to the application, not a library.
+
+    When ``prefixes`` is provided, the module-prefix match ALONE decides and
+    the path heuristic is ignored entirely. This keeps an app that is
+    pip-installed into site-packages (a common container layout) marked
+    in_app on its own frames. Without prefixes, fall back to the path
+    heuristic: not stdlib, not site-packages/dist-packages.
+    """
     if prefixes:
-        in_app = in_app and bool(module) and any(
-            module.startswith(p) for p in prefixes
-        )
-    return in_app
+        return bool(module) and any(module.startswith(p) for p in prefixes)
+
+    if not filename:
+        return True
+    try:
+        fn = os.path.normcase(os.path.realpath(filename))
+    except OSError:
+        fn = os.path.normcase(filename)
+    library = (
+        "site-packages" in fn
+        or "dist-packages" in fn
+        or any(fn.startswith(p) for p in _LIBRARY_PATHS)
+    )
+    return not library
 
 
 def _colno(frame: FrameType, tb: TracebackType) -> int:

@@ -178,6 +178,46 @@ def test_in_app_true_for_test_module():
     assert crash["in_app"] is True
 
 
+def test_in_app_prefix_overrides_path_heuristic():
+    # The Docker case: an app pip-installed into site-packages must still be
+    # in_app when its module matches a provided prefix. The prefix ALONE
+    # decides; the site-packages path heuristic is ignored.
+    assert (
+        _envelope._is_in_app(
+            "/usr/local/lib/python3.12/site-packages/myapp/views.py",
+            "myapp.views",
+            ["myapp"],
+        )
+        is True
+    )
+
+
+def test_in_app_prefix_nonmatch_is_false_even_off_library_paths():
+    # Prefix provided but the module does not match: False, even though the
+    # file path is application-like (not stdlib, not site-packages).
+    assert (
+        _envelope._is_in_app(
+            "/srv/app/other/module.py",
+            "other.module",
+            ["myapp"],
+        )
+        is False
+    )
+
+
+def test_in_app_no_prefixes_uses_path_heuristic():
+    # Without prefixes the path heuristic decides, unchanged.
+    assert (
+        _envelope._is_in_app(
+            "/usr/local/lib/python3.12/site-packages/requests/api.py",
+            "requests.api",
+            None,
+        )
+        is False
+    )
+    assert _envelope._is_in_app("/srv/app/myapp/views.py", "myapp.views", None) is True
+
+
 def test_in_app_prefix_filter_excludes_nonmatching():
     event = build(exc_info=_make_exc_info(), prefixes=["some.other.package"])
     crash = event["exception"]["stacktrace"]["frames"][-1]
