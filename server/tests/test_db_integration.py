@@ -214,6 +214,7 @@ async def test_schema_and_policies_exist(superuser_engine) -> None:
         assert row.rolbypassrls is True
 
 
+@pytest.mark.isolation
 async def test_rls_denies_without_org_context(app_sessionmaker, two_orgs) -> None:
     # A plain session (no GUC, no SET ROLE) sees nothing: current_setting
     # returns NULL and the org predicate fails, so RLS denies reads.
@@ -236,6 +237,7 @@ async def test_rls_denies_without_org_context(app_sessionmaker, two_orgs) -> Non
                 )
 
 
+@pytest.mark.isolation
 async def test_cross_org_reads_writes_updates_denied(app_sessionmaker, two_orgs) -> None:
     org_a = two_orgs["org_a"]
     org_b = two_orgs["org_b"]
@@ -290,6 +292,7 @@ async def test_cross_org_reads_writes_updates_denied(app_sessionmaker, two_orgs)
         assert name == "proj-b"
 
 
+@pytest.mark.isolation
 async def test_tenant_session_scopes_reads(app_sessionmaker, two_orgs) -> None:
     async with tenant_session(
         str(two_orgs["org_a"]), session_factory=app_sessionmaker
@@ -307,6 +310,7 @@ async def test_tenant_session_scopes_reads(app_sessionmaker, two_orgs) -> None:
     assert count_b == 1
 
 
+@pytest.mark.isolation
 async def test_events_rls_isolation(app_sessionmaker, two_orgs) -> None:
     # Insert an event owned by A (today's partition exists from the migration).
     event_id = uuid.uuid4()
@@ -396,6 +400,7 @@ async def test_system_session_cannot_read_outside_the_four_tables(
             await session.execute(text("SELECT count(*) FROM issues"))
 
 
+@pytest.mark.isolation
 async def test_plain_session_does_not_inherit_bypass(app_sessionmaker, two_orgs) -> None:
     # (d) The bypass is opt-in per transaction: a plain app session (no SET
     # ROLE, no GUC) is still RLS-bound and reads zero rows from dsn_keys even

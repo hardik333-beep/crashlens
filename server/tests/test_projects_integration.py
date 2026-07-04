@@ -241,6 +241,7 @@ async def test_list_members_returns_emails_and_roles(
             )
 
 
+@pytest.mark.isolation
 async def test_cross_org_isolation_under_rls(
     app_sessionmaker, superuser_engine
 ) -> None:
@@ -310,6 +311,7 @@ async def client():
         yield c
 
 
+@pytest.mark.isolation
 async def test_project_endpoints_enforce_member_and_admin_authz(
     superuser_engine, client
 ) -> None:

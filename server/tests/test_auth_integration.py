@@ -416,6 +416,7 @@ async def test_me_requires_valid_token_and_returns_user(
             await conn.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
 
 
+@pytest.mark.isolation
 async def test_org_invites_rejects_non_member_and_non_admin_with_403(
     superuser_engine, client
 ) -> None:

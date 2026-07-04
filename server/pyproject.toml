@@ -48,4 +48,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "db: integration test requiring a live PostgreSQL (skips if unreachable)",
+    "isolation: proves cross-tenant isolation (RLS deny, cross-org denial, org-scope 403s); hard-gated in CI",
 ]
