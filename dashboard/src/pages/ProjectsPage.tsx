@@ -120,7 +120,7 @@ export function ProjectsPage() {
                 <div>
                   <Link
                     className="card-title link"
-                    to={`/org/${orgId}/projects/${project.id}`}
+                    to={`/org/${orgId}/projects/${project.id}/issues`}
                   >
                     {project.name}
                   </Link>
@@ -128,15 +128,23 @@ export function ProjectsPage() {
                     {project.platform ?? "No platform set"}
                   </p>
                 </div>
-                {isAdmin && (
-                  <button
-                    type="button"
-                    className="btn btn-danger"
-                    onClick={() => void onDelete(project)}
+                <div className="row">
+                  <Link
+                    className="btn btn-ghost"
+                    to={`/org/${orgId}/projects/${project.id}/issues`}
                   >
-                    Delete
-                  </button>
-                )}
+                    View errors
+                  </Link>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      onClick={() => void onDelete(project)}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
               </li>
             ))}
           </ul>

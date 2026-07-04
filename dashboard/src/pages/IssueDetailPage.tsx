@@ -1,0 +1,307 @@
+import { useCallback, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+
+import { LevelBadge, StatusBadge } from "../components/LevelBadge";
+import { OccurrenceChart } from "../components/OccurrenceChart";
+import { OrgNav } from "../components/OrgNav";
+import { EmptyState, ErrorView, LoadingView } from "../components/StateViews";
+import {
+  actOnIssue,
+  deleteIssue,
+  fetchIssue,
+  type IssueAction,
+} from "../lib/endpoints";
+import { formatDateTime, formatRelative } from "../lib/format";
+import type { Breadcrumb, ExceptionNode, StackFrame } from "../lib/types";
+import { useAsyncData } from "../lib/useAsyncData";
+import { useOrgRole } from "../lib/useOrg";
+
+export function IssueDetailPage() {
+  const { orgId = "", projectId = "", issueId = "" } = useParams();
+  const role = useOrgRole(orgId);
+  const isAdmin = role.state.kind === "success" && role.state.data === "admin";
+
+  const issue = useAsyncData(
+    () => fetchIssue(orgId, projectId, issueId),
+    [orgId, projectId, issueId],
+  );
+  const reload = issue.reload;
+
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const onAction = useCallback(
+    async (action: IssueAction) => {
+      setActionError(null);
+      setBusy(true);
+      try {
+        await actOnIssue(orgId, projectId, issueId, action);
+        reload();
+      } catch {
+        setActionError("Could not update this error. Please try again.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [orgId, projectId, issueId, reload],
+  );
+
+  const onDelete = useCallback(async () => {
+    const confirmed = window.confirm(
+      "Delete this error? Its history is removed and this cannot be undone.",
+    );
+    if (!confirmed) {
+      return;
+    }
+    setActionError(null);
+    setBusy(true);
+    try {
+      await deleteIssue(orgId, projectId, issueId);
+      window.location.assign(`/org/${orgId}/projects/${projectId}/issues`);
+    } catch {
+      setActionError("Could not delete this error. Please try again.");
+      setBusy(false);
+    }
+  }, [orgId, projectId, issueId]);
+
+  const backLink = `/org/${orgId}/projects/${projectId}/issues`;
+
+  if (issue.state.kind === "loading") {
+    return (
+      <section className="stack">
+        <OrgNav orgId={orgId} />
+        <LoadingView />
+      </section>
+    );
+  }
+  if (issue.state.kind === "error") {
+    return (
+      <section className="stack">
+        <OrgNav orgId={orgId} />
+        <ErrorView message={issue.state.message} />
+        <Link className="link" to={backLink}>
+          Back to errors
+        </Link>
+      </section>
+    );
+  }
+
+  const detail = issue.state.data;
+  const payload = detail.latest_event?.payload;
+  const exception = payload?.exception;
+  const breadcrumbs = payload?.breadcrumbs ?? [];
+  const tags = payload?.tags ?? {};
+
+  return (
+    <section className="stack">
+      <OrgNav orgId={orgId} />
+      <Link className="link" to={backLink}>
+        Back to errors
+      </Link>
+
+      <div className="detail-header">
+        <div className="row detail-badges">
+          <LevelBadge level={detail.level} />
+          <StatusBadge status={detail.status} />
+        </div>
+        <h1>{detail.title}</h1>
+        <p className="muted">
+          {detail.event_count} {detail.event_count === 1 ? "event" : "events"}{" "}
+          &middot; first seen {formatRelative(detail.first_seen)} &middot; last
+          seen {formatRelative(detail.last_seen)}
+        </p>
+      </div>
+
+      <div className="row detail-actions">
+        {detail.status !== "resolved" && (
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => void onAction("resolve")}
+          >
+            Mark as fixed
+          </button>
+        )}
+        {detail.status !== "ignored" && (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={busy}
+            onClick={() => void onAction("ignore")}
+          >
+            Ignore
+          </button>
+        )}
+        {detail.status !== "unresolved" && (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={busy}
+            onClick={() => void onAction("reopen")}
+          >
+            Reopen
+          </button>
+        )}
+        {isAdmin && (
+          <button
+            type="button"
+            className="btn btn-danger"
+            disabled={busy}
+            onClick={() => void onDelete()}
+          >
+            Delete
+          </button>
+        )}
+      </div>
+
+      {actionError !== null && <ErrorView message={actionError} />}
+
+      <OccurrenceChart occurrences={detail.occurrences} />
+
+      {detail.latest_event !== null && (
+        <p className="muted env-line">
+          Environment: {detail.latest_event.environment}
+          {detail.latest_event.release
+            ? ` · Release: ${detail.latest_event.release}`
+            : ""}
+        </p>
+      )}
+
+      {Object.keys(tags).length > 0 && (
+        <div className="tag-row">
+          {Object.entries(tags).map(([key, value]) => (
+            <span key={key} className="tag-chip">
+              {key}: {value}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {exception ? (
+        <div className="stack">
+          <h2>What went wrong</h2>
+          <ExceptionView node={exception} depth={0} />
+        </div>
+      ) : (
+        payload?.message && (
+          <div className="stack">
+            <h2>Message</h2>
+            <pre className="snippet">{payload.message}</pre>
+          </div>
+        )
+      )}
+
+      {breadcrumbs.length > 0 && (
+        <div className="stack">
+          <h2>Leading up to it</h2>
+          <Breadcrumbs crumbs={breadcrumbs} />
+        </div>
+      )}
+
+      <div className="stack">
+        <h2>Recent events</h2>
+        {detail.recent_events.length === 0 ? (
+          <EmptyState title="No recent events." />
+        ) : (
+          <ul className="card-list">
+            {detail.recent_events.map((event) => (
+              <li key={event.event_id} className="card">
+                <div>
+                  <p className="card-title">
+                    {formatDateTime(event.received_at)}
+                  </p>
+                  <p className="muted">
+                    {event.environment}
+                    {event.release ? ` · ${event.release}` : ""}
+                  </p>
+                </div>
+                <LevelBadge level={event.level} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// One exception in the chain, then its "caused by" cause recursively. The root
+// cause (deepest) is the underlying failure; each nested level is labeled.
+function ExceptionView({
+  node,
+  depth,
+}: {
+  node: ExceptionNode;
+  depth: number;
+}) {
+  const frames = node.stacktrace?.frames ?? [];
+  return (
+    <div className="exception-block">
+      {depth > 0 && <p className="caused-by">Caused by</p>}
+      <p className="exception-title">
+        <span className="mono">{node.type ?? "Error"}</span>
+        {node.value ? `: ${node.value}` : ""}
+      </p>
+      {frames.length > 0 ? (
+        <ol className="frame-list">
+          {/* Frames are stored crash-last: render in order so the crashing
+              frame sits at the bottom, nearest the message. */}
+          {frames.map((frame, index) => (
+            <FrameRow key={index} frame={frame} />
+          ))}
+        </ol>
+      ) : (
+        <p className="muted">No code trace was captured for this error.</p>
+      )}
+      {node.cause && <ExceptionView node={node.cause} depth={depth + 1} />}
+    </div>
+  );
+}
+
+function FrameRow({ frame }: { frame: StackFrame }) {
+  // in_app defaults to true when unspecified (matches the server fingerprint
+  // rule) so first-party code is highlighted and library frames are dimmed.
+  const inApp = frame.in_app !== false;
+  const location = [frame.filename, frame.lineno].filter(Boolean).join(":");
+  return (
+    <li className={inApp ? "frame frame-inapp" : "frame frame-lib"}>
+      <div className="frame-head">
+        <span className="mono frame-location">{location || "unknown"}</span>
+        {frame.function && (
+          <span className="mono frame-fn">in {frame.function}</span>
+        )}
+      </div>
+      {frame.context_line && (
+        <pre className="frame-context">{frame.context_line}</pre>
+      )}
+    </li>
+  );
+}
+
+function Breadcrumbs({ crumbs }: { crumbs: Breadcrumb[] }) {
+  // Stored newest-last: render in order so the newest breadcrumb (closest to the
+  // crash) is at the bottom, right before the trace.
+  return (
+    <ol className="breadcrumb-list">
+      {crumbs.map((crumb, index) => (
+        <li key={index} className="breadcrumb">
+          <div className="row breadcrumb-head">
+            {crumb.category && (
+              <span className="tag-chip">{crumb.category}</span>
+            )}
+            {crumb.type && <span className="muted">{crumb.type}</span>}
+            {crumb.timestamp && (
+              <span className="muted breadcrumb-time">
+                {formatDateTime(crumb.timestamp)}
+              </span>
+            )}
+          </div>
+          {crumb.message && (
+            <p className="breadcrumb-message">{crumb.message}</p>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}

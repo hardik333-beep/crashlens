@@ -111,16 +111,24 @@ export function ProjectDetailPage() {
           <h1>{detail.name}</h1>
           <p className="muted">{detail.platform ?? "No platform set"}</p>
         </div>
-        {isAdmin && (
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => void onCreateKey()}
-            disabled={busy}
+        <div className="row">
+          <Link
+            className="btn btn-ghost"
+            to={`/org/${orgId}/projects/${projectId}/issues`}
           >
-            {busy ? "Working..." : "Create key"}
-          </button>
-        )}
+            View errors
+          </Link>
+          {isAdmin && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void onCreateKey()}
+              disabled={busy}
+            >
+              {busy ? "Working..." : "Create key"}
+            </button>
+          )}
+        </div>
       </div>
 
       {actionError !== null && <ErrorView message={actionError} />}

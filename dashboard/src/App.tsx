@@ -3,6 +3,8 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout } from "./components/AppLayout";
 import { RequireAuth } from "./components/RequireAuth";
 import { InvitePage } from "./pages/InvitePage";
+import { IssueDetailPage } from "./pages/IssueDetailPage";
+import { IssuesListPage } from "./pages/IssuesListPage";
 import { LoginPage } from "./pages/LoginPage";
 import { MembersPage } from "./pages/MembersPage";
 import { OrgOverviewPage } from "./pages/OrgOverviewPage";
@@ -24,6 +26,14 @@ export function App() {
           <Route
             path="/org/:orgId/projects/:projectId"
             element={<ProjectDetailPage />}
+          />
+          <Route
+            path="/org/:orgId/projects/:projectId/issues"
+            element={<IssuesListPage />}
+          />
+          <Route
+            path="/org/:orgId/projects/:projectId/issues/:issueId"
+            element={<IssueDetailPage />}
           />
           <Route path="/org/:orgId/members" element={<MembersPage />} />
           <Route path="/org/:orgId/settings" element={<SettingsPage />} />

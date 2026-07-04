@@ -323,3 +323,339 @@ select:focus {
   font-size: 0.82rem;
   white-space: pre;
 }
+
+/* --- Issues: filter chips + toolbar --------------------------------------- */
+.status-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: var(--accent);
+}
+
+.chip-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.issues-toolbar {
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.search-form input {
+  min-width: 220px;
+}
+
+.sort-field {
+  flex-direction: column;
+}
+
+/* --- Issues: table -------------------------------------------------------- */
+.table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.issues-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.issues-table th,
+.issues-table td {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.issues-table thead th {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.issues-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.issues-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.issues-table .muted-cell {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.issue-title {
+  font-weight: 600;
+}
+
+.pager {
+  flex-wrap: wrap;
+}
+
+/* --- Severity + status badges --------------------------------------------- */
+.level-badge,
+.status-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 2px 10px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.level-fatal {
+  background: #fce8e6;
+  color: #8f1a20;
+  border-color: #f3b7b4;
+}
+
+.level-error {
+  background: #fdecec;
+  color: #b4232a;
+  border-color: #f4c2c2;
+}
+
+.level-warning {
+  background: #fbf1d9;
+  color: #8a5a00;
+  border-color: #eed9a6;
+}
+
+.level-info {
+  background: #e6f2f1;
+  color: var(--accent-hover);
+  border-color: #bfe0dc;
+}
+
+.level-debug {
+  background: var(--bg);
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+.status-unresolved {
+  background: #fdecec;
+  color: #b4232a;
+  border-color: #f4c2c2;
+}
+
+.status-regressed {
+  background: #fbf1d9;
+  color: #8a5a00;
+  border-color: #eed9a6;
+}
+
+.status-resolved {
+  background: #e6f2f1;
+  color: var(--accent-hover);
+  border-color: #bfe0dc;
+}
+
+.status-ignored {
+  background: var(--bg);
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+/* --- Issue detail --------------------------------------------------------- */
+.detail-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detail-badges {
+  gap: 8px;
+}
+
+.detail-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.env-line {
+  margin: 0;
+}
+
+/* --- Occurrence chart ----------------------------------------------------- */
+.occurrence-chart {
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sparkline {
+  width: 100%;
+  height: 40px;
+  display: block;
+}
+
+.sparkline .bar {
+  fill: var(--accent);
+}
+
+.sparkline .bar-empty {
+  fill: var(--border);
+}
+
+/* --- Tags ----------------------------------------------------------------- */
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-chip {
+  font-size: 0.8rem;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  color: var(--text);
+}
+
+/* --- Stack trace ---------------------------------------------------------- */
+.exception-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.caused-by {
+  margin: 0;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.exception-title {
+  margin: 0;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.frame-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.frame {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.frame:last-child {
+  border-bottom: none;
+}
+
+.frame-lib {
+  background: var(--bg);
+  opacity: 0.75;
+}
+
+.frame-inapp {
+  background: var(--surface);
+  border-left: 3px solid var(--accent);
+}
+
+.frame-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.frame-location {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.frame-fn {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.frame-context {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  background: #f0f2f4;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.82rem;
+  white-space: pre;
+}
+
+/* --- Breadcrumbs ---------------------------------------------------------- */
+.breadcrumb-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.breadcrumb {
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.breadcrumb-head {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.breadcrumb-time {
+  margin-left: auto;
+}
+
+.breadcrumb-message {
+  margin: 4px 0 0;
+  font-size: 0.9rem;
+}

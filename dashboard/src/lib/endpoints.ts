@@ -6,6 +6,10 @@ import type {
   AuthResult,
   CreateInviteResult,
   DsnKey,
+  IssueDetail,
+  IssueListResult,
+  IssueSort,
+  IssueStatusFilter,
   Member,
   MeResult,
   Project,
@@ -94,6 +98,77 @@ export function revokeKey(
   return apiRequest<void>(
     `/orgs/${orgId}/projects/${projectId}/keys/${keyId}/revoke`,
     { method: "POST" },
+  );
+}
+
+// --- Issues (errors) ---------------------------------------------------------
+export interface ListIssuesParams {
+  status?: IssueStatusFilter;
+  q?: string;
+  sort?: IssueSort;
+  page?: number;
+  perPage?: number;
+}
+
+export function listIssues(
+  orgId: string,
+  projectId: string,
+  params: ListIssuesParams = {},
+): Promise<IssueListResult> {
+  const query = new URLSearchParams();
+  if (params.status) {
+    query.set("status", params.status);
+  }
+  if (params.q) {
+    query.set("q", params.q);
+  }
+  if (params.sort) {
+    query.set("sort", params.sort);
+  }
+  if (params.page) {
+    query.set("page", String(params.page));
+  }
+  if (params.perPage) {
+    query.set("per_page", String(params.perPage));
+  }
+  const suffix = query.toString();
+  return apiRequest<IssueListResult>(
+    `/orgs/${orgId}/projects/${projectId}/issues${suffix ? `?${suffix}` : ""}`,
+  );
+}
+
+export function fetchIssue(
+  orgId: string,
+  projectId: string,
+  issueId: string,
+): Promise<IssueDetail> {
+  return apiRequest<IssueDetail>(
+    `/orgs/${orgId}/projects/${projectId}/issues/${issueId}`,
+  );
+}
+
+export type IssueAction = "resolve" | "ignore" | "reopen";
+
+export function actOnIssue(
+  orgId: string,
+  projectId: string,
+  issueId: string,
+  action: IssueAction,
+): Promise<IssueDetail> {
+  return apiRequest<IssueDetail>(
+    `/orgs/${orgId}/projects/${projectId}/issues/${issueId}/${action}`,
+    { method: "POST" },
+  );
+}
+
+export function deleteIssue(
+  orgId: string,
+  projectId: string,
+  issueId: string,
+): Promise<void> {
+  return apiRequest<void>(
+    `/orgs/${orgId}/projects/${projectId}/issues/${issueId}`,
+    { method: "DELETE" },
   );
 }
 

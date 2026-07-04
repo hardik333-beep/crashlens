@@ -38,6 +38,94 @@ export interface Member {
   role: string;
 }
 
+// --- Issues (errors) ---------------------------------------------------------
+export interface IssueListItem {
+  id: string;
+  title: string;
+  level: string;
+  status: string;
+  first_seen: string;
+  last_seen: string;
+  event_count: number;
+  assigned_to: string | null;
+}
+
+export interface IssueListResult {
+  issues: IssueListItem[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+export interface OccurrenceDay {
+  day: string;
+  count: number;
+}
+
+export interface RecentEvent {
+  event_id: string;
+  received_at: string;
+  environment: string;
+  release: string | null;
+  level: string;
+}
+
+// A stored event payload (the normalized envelope). Only the fields the detail
+// view renders are typed; unknown fields pass through untouched.
+export interface StackFrame {
+  filename?: string;
+  function?: string;
+  lineno?: number;
+  colno?: number;
+  in_app?: boolean;
+  context_line?: string;
+  pre_context?: string[];
+  post_context?: string[];
+}
+
+export interface ExceptionNode {
+  type?: string;
+  value?: string;
+  stacktrace?: { frames?: StackFrame[] };
+  cause?: ExceptionNode;
+}
+
+export interface Breadcrumb {
+  type?: string;
+  category?: string;
+  message?: string;
+  timestamp?: string;
+  level?: string;
+}
+
+export interface EventPayload {
+  message?: string;
+  platform?: string;
+  exception?: ExceptionNode;
+  breadcrumbs?: Breadcrumb[];
+  tags?: Record<string, string>;
+}
+
+export interface LatestEvent {
+  event_id: string;
+  received_at: string;
+  environment: string;
+  release: string | null;
+  level: string;
+  payload: EventPayload;
+}
+
+export interface IssueDetail extends IssueListItem {
+  latest_event: LatestEvent | null;
+  recent_events: RecentEvent[];
+  occurrences: OccurrenceDay[];
+}
+
+export type IssueStatusFilter =
+  "unresolved" | "regressed" | "resolved" | "ignored" | "all";
+
+export type IssueSort = "last_seen" | "first_seen" | "count";
+
 export interface AuthResult {
   token: string;
   user: User;
