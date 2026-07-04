@@ -289,8 +289,10 @@ class IssueComment(Base):
     issue_id: Mapped[uuid.UUID] = mapped_column(
         _UUID_PK, sa.ForeignKey("issues.id", ondelete="CASCADE"), nullable=False
     )
+    # Nullable to match the FK's ON DELETE SET NULL (revision 0004): a deleted
+    # user leaves the comment behind with author NULL ("former teammate").
     author: Mapped[uuid.UUID | None] = mapped_column(
-        _UUID_PK, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=False
+        _UUID_PK, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     body: Mapped[str] = mapped_column(sa.Text(), nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(

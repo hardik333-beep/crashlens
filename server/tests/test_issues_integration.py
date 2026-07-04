@@ -585,6 +585,55 @@ async def test_comments_create_and_list_chronological(
             await conn.execute(text("DELETE FROM users WHERE id = :id"), {"id": author_id})
 
 
+async def test_deleted_author_comment_survives_with_null_author(
+    app_sessionmaker, superuser_engine, two_orgs
+) -> None:
+    """Deleting a user must leave their comments behind with author NULL.
+
+    Exercises the exact FK action (ON DELETE SET NULL) that revision 0004 made
+    coherent by dropping the column's NOT NULL: before 0004 the user DELETE
+    itself would fail. list_comments then surfaces both author fields as None
+    (the UI renders "Former teammate").
+    """
+    org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
+    res = await _seed_event(
+        app_sessionmaker, org_a, project_a, _exc_envelope(str(uuid.uuid4()), func="orphan")
+    )
+    issue_id = uuid.UUID(res["issue_id"])
+
+    author_id = uuid.uuid4()
+    async with superuser_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO users (id, email, password_hash) "
+                "VALUES (:id, :email, :ph)"
+            ),
+            {
+                "id": author_id,
+                "email": f"leaver-{uuid.uuid4()}@example.test",
+                "ph": security.hash_password(_KNOWN_PASSWORD),
+            },
+        )
+    created = await issues.add_comment(
+        org_a, project_a, issue_id, author_id, "I saw this in staging.",
+        session_factory=app_sessionmaker,
+    )
+    assert created is not None
+
+    # The user leaves: this DELETE fires the FK's SET NULL on their comment.
+    async with superuser_engine.begin() as conn:
+        await conn.execute(text("DELETE FROM users WHERE id = :id"), {"id": author_id})
+
+    listed = await issues.list_comments(
+        org_a, project_a, issue_id, session_factory=app_sessionmaker
+    )
+    assert listed is not None
+    assert len(listed) == 1
+    assert listed[0]["body"] == "I saw this in staging."
+    assert listed[0]["author_id"] is None
+    assert listed[0]["author_email"] is None
+
+
 async def test_list_comments_missing_issue_is_none(app_sessionmaker, two_orgs) -> None:
     org_a, project_a = two_orgs["org_a"], two_orgs["project_a"]
     result = await issues.list_comments(

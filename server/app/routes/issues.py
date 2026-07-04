@@ -79,7 +79,9 @@ class AssignIssueRequest(BaseModel):
 
 class CommentOut(BaseModel):
     id: str
-    author_id: str
+    # Both author fields are null when the authoring user was deleted (the FK
+    # sets ``issue_comments.author`` to NULL); the UI shows "Former teammate".
+    author_id: str | None
     author_email: str | None
     body: str
     created_at: str

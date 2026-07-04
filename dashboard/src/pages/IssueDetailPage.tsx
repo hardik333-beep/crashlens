@@ -462,14 +462,15 @@ function Breadcrumbs({ crumbs }: { crumbs: Breadcrumb[] }) {
 
 // A single comment: author email, relative age, and body. Comments arrive
 // oldest-first from the API, so rendering them in order reads top-to-bottom
-// like a chat thread with the newest note at the bottom.
+// like a chat thread with the newest note at the bottom. A null author email
+// means the authoring user was deleted, shown as "Former teammate".
 function CommentRow({ comment }: { comment: IssueComment }) {
   return (
     <li className="card comment-card">
       <div className="stack comment-body-block">
         <div className="row-between">
           <span className="card-title">
-            {comment.author_email ?? "A former team member"}
+            {comment.author_email ?? "Former teammate"}
           </span>
           <span className="muted">{formatRelative(comment.created_at)}</span>
         </div>

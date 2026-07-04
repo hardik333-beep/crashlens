@@ -516,9 +516,13 @@ async def assign_issue(
 
 # --- Comments (member) ----------------------------------------------------------
 def _comment_dict(row: object, email: str | None) -> dict:
+    # ``author`` is NULL when the authoring user was deleted (FK ON DELETE SET
+    # NULL, coherent since revision 0004 dropped the NOT NULL): both author
+    # fields surface as None and the UI renders a plain-language placeholder.
+    author = row.author  # type: ignore[attr-defined]
     return {
         "id": str(row.id),  # type: ignore[attr-defined]
-        "author_id": str(row.author),  # type: ignore[attr-defined]
+        "author_id": str(author) if author is not None else None,
         "author_email": email,
         "body": row.body,  # type: ignore[attr-defined]
         "created_at": row.created_at.isoformat(),  # type: ignore[attr-defined]
@@ -555,7 +559,9 @@ async def list_comments(
                 {"iid": str(issue_id)},
             )
         ).all()
-    author_ids = [row.author for row in rows]
+    # NULL authors (deleted users) are skipped in the email lookup; their
+    # ``emails.get(None)`` below naturally resolves to None.
+    author_ids = [row.author for row in rows if row.author is not None]
     emails = await accounts.load_users_by_ids(
         author_ids, session_factory=session_factory
     )

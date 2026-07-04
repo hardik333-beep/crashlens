@@ -124,7 +124,9 @@ export interface IssueDetail extends IssueListItem {
 
 export interface IssueComment {
   id: string;
-  author_id: string;
+  // Both author fields are null when the authoring user was deleted; the UI
+  // shows "Former teammate" in that case.
+  author_id: string | null;
   author_email: string | null;
   body: string;
   created_at: string;

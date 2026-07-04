@@ -120,6 +120,38 @@ def test_coerce_payload_returns_undecodable_string_unchanged() -> None:
     assert issues._coerce_payload("not json") == "not json"
 
 
+# --- Comment shaping: deleted author --------------------------------------------
+def test_comment_dict_null_author_surfaces_none_fields() -> None:
+    """A NULL author (user deleted; FK ON DELETE SET NULL, coherent since
+    revision 0004) must surface author_id and author_email as None, never the
+    string "None". The dashboard renders this as "Former teammate"."""
+
+    class _Row:
+        id = uuid.uuid4()
+        author = None
+        body = "left behind"
+        created_at = datetime.datetime(2026, 7, 4, 12, 0, tzinfo=datetime.UTC)
+
+    shaped = issues._comment_dict(_Row(), None)
+    assert shaped["author_id"] is None
+    assert shaped["author_email"] is None
+    assert shaped["body"] == "left behind"
+
+
+def test_comment_dict_present_author_is_stringified() -> None:
+    author_id = uuid.uuid4()
+
+    class _Row:
+        id = uuid.uuid4()
+        author = author_id
+        body = "still here"
+        created_at = datetime.datetime(2026, 7, 4, 12, 0, tzinfo=datetime.UTC)
+
+    shaped = issues._comment_dict(_Row(), "member@example.test")
+    assert shaped["author_id"] == str(author_id)
+    assert shaped["author_email"] == "member@example.test"
+
+
 # --- Comment body-length validation --------------------------------------------
 def test_comment_body_accepts_minimum_length() -> None:
     assert issues.validate_comment_body("a") == "a"
