@@ -1,7 +1,7 @@
 """issue_comments.author nullable so ON DELETE SET NULL is coherent
 
 Revision ID: 0004_comment_author_nullable
-Revises: 0003_partition_fn_security_definer
+Revises: 0003_partition_fn_secdef
 Create Date: 2026-07-04
 
 Every Crashlens revision MUST implement both upgrade() and downgrade() with
@@ -48,7 +48,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "0004_comment_author_nullable"
-down_revision: str | None = "0003_partition_fn_security_definer"
+down_revision: str | None = "0003_partition_fn_secdef"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

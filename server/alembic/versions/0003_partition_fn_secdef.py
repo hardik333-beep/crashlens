@@ -1,8 +1,11 @@
 """partition functions SECURITY DEFINER with pinned search_path
 
-Revision ID: 0003_partition_fn_security_definer
+Revision ID: 0003_partition_fn_secdef
 Revises: 0002_auth_account_security
 Create Date: 2026-07-04
+
+Renamed from a 34-char id (0003_partition_fn_security_definer) that overflowed
+alembic_version's VARCHAR(32); no database anywhere ever recorded the old id.
 
 Every Crashlens revision MUST implement both upgrade() and downgrade() with
 explicit, reversible operations. Do not leave downgrade() as a no-op.
@@ -51,7 +54,7 @@ from collections.abc import Sequence
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "0003_partition_fn_security_definer"
+revision: str = "0003_partition_fn_secdef"
 down_revision: str | None = "0002_auth_account_security"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
