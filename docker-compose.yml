@@ -38,6 +38,12 @@ services:
     volumes:
       - dashboard_dist:/srv/dashboard
 
+  # api and worker connect as the NON-superuser crashlens_login role via the
+  # DATABASE_URL in .env, so RLS tenant isolation is enforced at runtime.
+  # Migrations run as the schema-owning superuser via a one-off DATABASE_URL
+  # override (Alembic simply reads DATABASE_URL, so the override is the whole
+  # mechanism - no code change):
+  #   docker compose run --rm -e DATABASE_URL=${MIGRATIONS_DATABASE_URL} api alembic upgrade head
   api:
     build:
       context: .
@@ -77,8 +83,14 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      # Read by ./deploy/postgres-init/01-app-user.sh to create the
+      # crashlens_login runtime role at first cluster init.
+      CRASHLENS_DB_APP_PASSWORD: ${CRASHLENS_DB_APP_PASSWORD}
     volumes:
       - pg_data:/var/lib/postgresql/data
+      # Runs ONCE at first init (empty data dir), as the superuser, to create the
+      # non-superuser crashlens_login role the app connects as.
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
