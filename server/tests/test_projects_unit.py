@@ -5,6 +5,7 @@ unauthenticated / non-member short circuits on the project endpoints that reject
 before any database access is required.
 """
 
+import re
 import uuid
 
 from httpx import ASGITransport, AsyncClient
@@ -16,12 +17,15 @@ from app.main import create_app
 # --- Project slug -------------------------------------------------------------
 def test_project_slug_is_urlsafe_and_prefixed_from_name() -> None:
     slug = projects._make_project_slug("My Web App!")
-    # Normalized, lowercased prefix with non-alphanumerics collapsed to hyphens,
-    # then a short random url-safe suffix (same shape as accounts._make_org_slug).
-    prefix, _, suffix = slug.rpartition("-")
-    assert prefix == "my-web-app"
-    assert all(c.islower() or c.isdigit() or c == "-" for c in prefix)
-    assert suffix and all(c.isalnum() or c in "-_" for c in suffix)
+    # Structural, deterministic assertions. The random 8-char suffix comes from
+    # secrets.token_urlsafe (base64.urlsafe_b64encode), whose alphabet is
+    # A-Za-z0-9 plus "-" and "_", so the suffix itself may contain hyphens:
+    # never split the slug on "-" to recover the base.
+    # Shape: normalized lowercase base + "-" + exactly 8 suffix characters.
+    base = "my-web-app"
+    assert slug.startswith(base + "-")
+    assert len(slug) == len(base) + 1 + 8
+    assert re.fullmatch(r"[A-Za-z0-9_-]+", slug) is not None
 
 
 def test_project_slug_is_unique_per_call() -> None:
