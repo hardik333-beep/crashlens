@@ -26,7 +26,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3,<9",
-    "pytest-asyncio>=0.24,<0.25",
+    "pytest-asyncio>=1,<2",
     "httpx>=0.27,<0.28",
     "ruff>=0.7,<0.8",
 ]
@@ -46,6 +46,18 @@ known-first-party = ["app"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# One shared session event loop for every async test AND every async fixture.
+# The db-integration suites bind module-scoped engines/connections in async
+# fixtures and use them from many tests. pytest-asyncio's default gives each
+# test its own function-scoped loop, so a module-scoped fixture's asyncpg
+# connections are created on one loop and used/disposed across others -- the
+# "another operation is in progress" / "Event loop is closed" errors that broke
+# the db suite in CI. Pinning both scopes to "session" puts every fixture and
+# test on the same loop, so module-scoped engines live on the loop that uses
+# them. asyncio_default_test_loop_scope was added in pytest-asyncio 0.26.0,
+# which is why the pin is >=1,<2 (0.24 has only the fixture-scope option).
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 markers = [
     "db: integration test requiring a live PostgreSQL (skips if unreachable)",
