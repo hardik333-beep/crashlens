@@ -280,3 +280,18 @@ jobs:
       - name: Build
         working-directory: dashboard
         run: npm run build
+
+  # (g) Validate the reverse-proxy config so a Caddyfile typo fails CI instead
+  # of the first deploy. Runs the official caddy image's own adapter+validate.
+  # CRASHLENS_SITE_ADDRESS is intentionally left unset so the Caddyfile's
+  # ``{$CRASHLENS_SITE_ADDRESS::80}`` default (:80) is exercised, the same value
+  # a local self-hoster gets before pointing a domain at it.
+  caddy-validate:
+    name: caddy validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate deploy/Caddyfile
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work caddy:2-alpine \
+            caddy validate --config deploy/Caddyfile --adapter caddyfile
