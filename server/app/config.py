@@ -32,6 +32,16 @@ class Settings(BaseSettings):
     # Read from SOURCEMAPS_DIR (case-insensitive).
     sourcemaps_dir: str = "/var/lib/crashlens/sourcemaps"
 
+    # Optional path to a compiled dashboard build (the Vite ``dist`` directory).
+    # When set AND the directory exists, the API process ALSO serves the dashboard
+    # SPA and accepts the browser's /api/* calls itself, so a single container can
+    # run the whole product with no Caddy in front (single-container mode, used by
+    # PaaS like Railway/Fly/Render). When unset (the default and the compose
+    # stack's behaviour) nothing is mounted and Caddy remains responsible for the
+    # static assets and the /api prefix. Read from SERVE_DASHBOARD_DIR
+    # (case-insensitive).
+    serve_dashboard_dir: str | None = None
+
     # --- Email alerts (all OPTIONAL) -----------------------------------------
     # Email alerting is off unless BOTH smtp_host and smtp_from are configured.
     # When unset, the alert engine logs a single warning once per process and

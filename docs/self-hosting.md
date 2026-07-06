@@ -139,6 +139,39 @@ would otherwise travel in the clear. Point the domain's DNS at your server
 before starting the stack so Caddy's automatic certificate issuance can
 succeed.
 
+## Single-container mode (PaaS: Railway/Fly/Render)
+
+The `docker compose` stack above is the recommended way to self-host: it runs
+Caddy, the API, the worker, Postgres, and Redis together on one machine. Some
+platforms, though, run one image per service and provide their own TLS/edge and
+managed Postgres/Redis (Railway, Fly.io, Render). For those, Crashlens ships a
+single-container image, `deploy/railway.Dockerfile`, that folds the dashboard
+and the API into one web container: uvicorn serves the compiled dashboard AND
+answers the browser's `/api/*` calls itself, so no Caddy is needed in front.
+
+That image is the **web** half only. The background **worker** is still its own
+container: build `deploy/worker.Dockerfile` as a second service pointed at the
+same Postgres and Redis. Migrations are still run once, by hand, as the
+schema-owning superuser, exactly as in [step 2](#2-create-the-database-schema)
+above; there is no automatic-migration-on-boot.
+
+What makes it work is one environment variable, `SERVE_DASHBOARD_DIR`. When it
+points at a compiled dashboard build (the Railway image bakes the build in at
+`/srv/dashboard` and sets the variable for you), the API process mounts the SPA
+and strips the `/api` prefix in-process, the one job Caddy does in the compose
+stack. Leave `SERVE_DASHBOARD_DIR` unset and the app behaves exactly as it does
+behind Caddy: no static files, no `/api` handling, just the API.
+
+Required environment on the web service: `DATABASE_URL` (the non-superuser
+`crashlens_login` connection, `postgresql+asyncpg://...`), `REDIS_URL`, and
+`SECRET_KEY`. Set `PUBLIC_BASE_URL` to the service's public URL so alert links
+are absolute. The worker service takes the same variables except
+`PUBLIC_BASE_URL`. The platform's injected `$PORT` is honored automatically.
+
+Because the platform terminates TLS at its edge, keep `DATABASE_URL` pointed at
+the non-superuser role here too: the tenant-isolation note in
+[step 2](#2-create-the-database-schema) applies unchanged.
+
 ## Updating to a new version
 
 ```bash
